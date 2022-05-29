@@ -7,6 +7,10 @@
 //#include <boost/multiprecision/cpp_int.hpp>
 //#include <boost/multiprecision/cpp_bin_float.hpp>
 #ifdef _MSC_VER
+#include <opencv2/core.hpp>
+#include <opencv2/core/utils/logger.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
 #include <conio.h>
 #include <ppl.h>
 #include <filesystem>
@@ -246,7 +250,214 @@ struct UnionFind {
     }
 };
 
+struct Input {
+    int N, T;
+    vector<vector<int>> tiles;
+};
 
+Input parse_input(std::istream& in) {
+    int N, T;
+    cin >> N >> T;
+    vector<string> S(N);
+    cin >> S;
+    vector<vector<int>> tiles(N, vector<int>(N));
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            tiles[i][j] = c2t[S[i][j]];
+        }
+    }
+    return { N, T, tiles };
+}
+
+Input generate_tree(int N, Xorshift& rnd) {
+    int T = 2 * N * N * N;
+    vector<vector<int>> tiles(N, vector<int>(N));
+    vector<std::tuple<int, int, int, int>> edges;
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            if (i + 1 < N && !(i + 1 == N - 1 && j == N - 1)) {
+                edges.emplace_back(i, j, i + 1, j);
+            }
+            if (j + 1 < N && !(i == N - 1 && j + 1 == N - 1)) {
+                edges.emplace_back(i, j, i, j + 1);
+            }
+        }
+    }
+    shuffle_vector(edges, rnd);
+    UnionFind uf(N * N);
+    for (const auto [i1, j1, i2, j2] : edges) {
+        int u = i1 * N + j1, v = i2 * N + j2;
+        if (!uf.same(u, v)) {
+            uf.unite(u, v);
+            if (i1 + 1 == i2) {
+                tiles[i1][j1] |= DOWN;
+                tiles[i2][j2] |= UP;
+            }
+            else {
+                tiles[i1][j1] |= RIGHT;
+                tiles[i2][j2] |= LEFT;
+            }
+        }
+    }
+    return { N, T, tiles };
+}
+
+struct TreeModifier {
+
+    using Edge = std::tuple<int, int, int, int>;
+
+    int N;
+    vector<int> target_ctr; // target tile count
+    vector<int> tree_ctr; // tree tile count
+    vector<vector<int>> tiles;
+    vector<Edge> disabled_edges;
+    int cost;
+
+    TreeModifier(const Input& input, const Input& tree) {
+        N = input.N;
+        target_ctr.assign(16, 0);
+        tree_ctr.assign(16, 0);
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                target_ctr[input.tiles[i][j]]++;
+                tree_ctr[tree.tiles[i][j]]++;
+            }
+        }
+        tiles = tree.tiles;
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N - 1; j++) {
+                int t1 = tiles[i][j], t2 = tiles[i][j + 1];
+                if ((t1 & RIGHT) && (t2 & LEFT)) {
+                }
+                else if (!(i == N - 1 && j + 1 == N - 1)) {
+                    disabled_edges.emplace_back(i, j, i, j + 1);
+                }
+            }
+        }
+        for (int i = 0; i < N - 1; i++) {
+            for (int j = 0; j < N; j++) {
+                int t1 = tiles[i][j], t2 = tiles[i + 1][j];
+                if ((t1 & DOWN) && (t2 & UP)) {
+                }
+                else if (!(i + 1 == N - 1 && j == N - 1)) {
+                    disabled_edges.emplace_back(i, j, i + 1, j);
+                }
+            }
+        }
+        cost = 0;
+        for (int i = 0; i < 16; i++) {
+            cost += abs(target_ctr[i] - tree_ctr[i]);
+        }
+        dump(cost);
+    }
+
+    Edge choose_random_disabled_edge(Xorshift& rnd) {
+        int eid = rnd.next_int(disabled_edges.size());
+        std::swap(disabled_edges[eid], disabled_edges.back()); // 末端に移動しておく
+        auto e = disabled_edges.back();
+        return e;
+    }
+
+    void toggle_edge(int i1, int j1, int i2, int j2) {
+        tree_ctr[tiles[i1][j1]]--;
+        tree_ctr[tiles[i2][j2]]--;
+        if (i1 == i2) {
+            tiles[i1][j1] ^= RIGHT;
+            tiles[i2][j2] ^= LEFT;
+        }
+        else {
+            tiles[i1][j1] ^= DOWN;
+            tiles[i2][j2] ^= UP;
+        }
+        tree_ctr[tiles[i1][j1]]++;
+        tree_ctr[tiles[i2][j2]]++;
+    }
+
+    void local_search(Xorshift& rnd) {
+        // 接続していない辺を on にする
+        // 出来たサイクルの辺を一つ選択して off にする
+        auto e = choose_random_disabled_edge(rnd);
+        int i1 = std::get<0>(e), j1 = std::get<1>(e), i2 = std::get<2>(e), j2 = std::get<3>(e);
+        // (i1,j1) -> (i2,j2) のパスを求める
+        auto path = [&]() {
+            vector<vector<bool>> seen(N, vector<bool>(N));
+            vector<vector<pii>> prev(N, vector<pii>(N, { -1, -1 }));
+            std::queue<pii> qu({ {i1, j1} });
+            seen[i1][j1] = true;
+            bool found = false;
+            while (!qu.empty()) {
+                auto [i, j] = qu.front(); qu.pop();
+                int t = tiles[i][j];
+                for (int d = 0; d < 4; d++) {
+                    if (!(t >> d & 1)) continue; // d 方向に伸びていない
+                    int ni = i + di[d], nj = j + dj[d];
+                    if (seen[ni][nj]) continue;
+                    seen[ni][nj] = true;
+                    qu.emplace(ni, nj);
+                    prev[ni][nj] = { i, j };
+                    if (ni == i2 && nj == j2) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+            pii p(i2, j2);
+            vector<pii> path({ p });
+            while (p.first != -1) {
+                p = prev[p.first][p.second];
+                if (p.first == -1) break;
+                path.push_back(p);
+            }
+            reverse(path.begin(), path.end());
+            return path;
+        }();
+
+        vector<Edge> cands;
+        for (int n = 0; n + 1 < path.size(); n++) {
+            auto [i3, j3] = path[n];
+            auto [i4, j4] = path[n + 1];
+            if ((i3 == i4 && j3 > j4) || (j3 == j4 && i3 > i4)) {
+                std::swap(i3, i4);
+                std::swap(j3, j4);
+            }
+            cands.emplace_back(i3, j3, i4, j4);
+        }
+
+        int min_cost = INT_MAX;
+        Edge min_edge;
+        // connect (i1,j1)-(i2,j2)
+        toggle_edge(i1, j1, i2, j2);
+        for (auto e2 : cands) {
+            auto [i3, j3, i4, j4] = e2;
+            // disconnect (i3,j3)-(i4,j4)
+            toggle_edge(i3, j3, i4, j4);
+            int new_cost = 0;
+            for (int t = 0; t < 16; t++) {
+                new_cost += abs(target_ctr[t] - tree_ctr[t]);
+            }
+            if (new_cost <= cost && chmin(min_cost, new_cost)) {
+                min_edge = e2;
+            }
+            toggle_edge(i3, j3, i4, j4);
+        }
+
+        if (min_cost == INT_MAX) {
+            toggle_edge(i1, j1, i2, j2); // revert
+            return;
+        }
+
+        {
+            auto [i3, j3, i4, j4] = min_edge;
+            cost = min_cost;
+            toggle_edge(i3, j3, i4, j4);
+            disabled_edges.pop_back();
+            disabled_edges.emplace_back(i3, j3, i4, j4);
+        }
+        dump(cost);
+    }
+
+};
 
 struct State;
 using StatePtr = std::shared_ptr<State>;
@@ -363,6 +574,29 @@ StatePtr beam_search(StatePtr init_state, double duration) {
     return best_state;
 }
 
+#ifdef HAVE_OPENCV_HIGHGUI
+void show(const vector<vector<int>>& tiles, int delay = 0) {
+    int N = tiles.size();
+    int sz = 800 / N, H = sz * N, W = sz * N;
+    cv::Mat_<cv::Vec3b> img(H, W, cv::Vec3b(255, 255, 255));
+    for (int i = 0; i <= N; i++) {
+        cv::line(img, cv::Point(0, i * sz), cv::Point(W, i * sz), cv::Scalar(200, 200, 200), 2);
+        cv::line(img, cv::Point(i * sz, 0), cv::Point(i * sz, H), cv::Scalar(200, 200, 200), 2);
+    }
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            cv::Point ctr(j * sz + sz / 2, i * sz + sz / 2);
+            for (int d = 0; d < 4; d++) if (tiles[i][j] >> d & 1) {
+                cv::Point dv(dj[d] * sz / 2, di[d] * sz / 2);
+                cv::line(img, ctr, ctr + dv, cv::Scalar(0, 0, 0), 3);
+            }
+        }
+    }
+    cv::imshow("img", img);
+    cv::waitKey(delay);
+}
+#endif
+
 int main(int argc, char** argv) {
 
 #ifdef HAVE_OPENCV_HIGHGUI
@@ -373,18 +607,34 @@ int main(int argc, char** argv) {
     for (char c = '0'; c <= '9'; c++) c2t[c] = c - '0';
     for (char c = 'a'; c <= 'f'; c++) c2t[c] = c - 'a' + 10;
 
-    StatePtr init_state = nullptr;
-    {
-        int N, T;
-        cin >> N >> T;
-        vector<string> board(N);
-        cin >> board;
-        init_state = std::make_shared<State>(N, board);
+    auto input = parse_input(cin);
+
+    auto calc_dist = [](const Input& src, const Input& dst) {
+        int ctr[16] = {}, N = src.N;
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                ctr[src.tiles[i][j]]++;
+                ctr[dst.tiles[i][j]]--;
+            }
+        }
+        int d = 0;
+        for (int t = 0; t < 16; t++) {
+            d += abs(ctr[t]);
+        }
+        return d;
+    };
+
+    int min_dist = INT_MAX;
+    auto target = input;
+
+    TreeModifier tmod(target, generate_tree(input.N, rnd));
+
+    while (tmod.cost) {
+        tmod.local_search(rnd);
     }
 
-    auto best_state = beam_search(init_state, 2900);
-
-    cout << best_state->cmds << endl;
+    show(tmod.tiles);
+    show(input.tiles);
 
     return 0;
 }
