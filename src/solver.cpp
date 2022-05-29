@@ -202,6 +202,18 @@ template<typename T, typename ...Args> auto make_vector(T x, int arg, Args ...ar
 template<typename T> bool chmax(T& a, const T& b) { if (a < b) { a = b; return true; } return false; }
 template<typename T> bool chmin(T& a, const T& b) { if (a > b) { a = b; return true; } return false; }
 
+class FastQueue {
+    int front, back;
+    int v[1 << 12];
+public:
+    FastQueue() : front(0), back(0) {}
+    inline bool empty() { return front == back; }
+    inline void push(int x) { v[front++] = x; }
+    inline int pop() { return v[back++]; }
+    inline void reset() { front = back = 0; }
+    inline int size() { return front - back; }
+} fqu;
+
 using ll = long long;
 using ld = double;
 //using ld = boost::multiprecision::cpp_bin_float_quad;
@@ -257,9 +269,9 @@ struct Input {
 
 Input parse_input(std::istream& in) {
     int N, T;
-    cin >> N >> T;
+    in >> N >> T;
     vector<string> S(N);
-    cin >> S;
+    in >> S;
     vector<vector<int>> tiles(N, vector<int>(N));
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
@@ -348,7 +360,7 @@ struct TreeModifier {
         for (int i = 0; i < 16; i++) {
             cost += abs(target_ctr[i] - tree_ctr[i]);
         }
-        dump(cost);
+        //dump(cost);
     }
 
     Edge choose_random_disabled_edge(Xorshift& rnd) {
@@ -379,22 +391,26 @@ struct TreeModifier {
         auto e = choose_random_disabled_edge(rnd);
         int i1 = std::get<0>(e), j1 = std::get<1>(e), i2 = std::get<2>(e), j2 = std::get<3>(e);
         // (i1,j1) -> (i2,j2) のパスを求める
+        bool seen[10][10];
+        //pii prev[10][10];
+        int prev[10][10];
         auto path = [&]() {
-            vector<vector<bool>> seen(N, vector<bool>(N));
-            vector<vector<pii>> prev(N, vector<pii>(N, { -1, -1 }));
-            std::queue<pii> qu({ {i1, j1} });
+            Fill(seen, false);
+            Fill(prev, -1);
+            fqu.reset();
+            fqu.push((i1 << 4) | j1);
             seen[i1][j1] = true;
             bool found = false;
-            while (!qu.empty()) {
-                auto [i, j] = qu.front(); qu.pop();
+            while (!fqu.empty()) {
+                int ij = fqu.pop(), i = ij >> 4, j = ij & 0xF;
                 int t = tiles[i][j];
                 for (int d = 0; d < 4; d++) {
                     if (!(t >> d & 1)) continue; // d 方向に伸びていない
                     int ni = i + di[d], nj = j + dj[d];
                     if (seen[ni][nj]) continue;
                     seen[ni][nj] = true;
-                    qu.emplace(ni, nj);
-                    prev[ni][nj] = { i, j };
+                    fqu.push((ni << 4) | nj);
+                    prev[ni][nj] = (i << 4) | j;
                     if (ni == i2 && nj == j2) {
                         found = true;
                         break;
@@ -402,18 +418,18 @@ struct TreeModifier {
                 }
                 if (found) break;
             }
-            pii p(i2, j2);
-            vector<pii> path({ p });
-            while (p.first != -1) {
-                p = prev[p.first][p.second];
-                if (p.first == -1) break;
-                path.push_back(p);
+            int p = (i2 << 4) | j2;
+            vector<pii> path; path.reserve(128);
+            path.emplace_back(p >> 4, p & 0xF);
+            while (p != -1) {
+                p = prev[p >> 4][p & 0xF];
+                if (p == -1) break;
+                path.emplace_back(p >> 4, p & 0xF);
             }
-            reverse(path.begin(), path.end());
             return path;
         }();
 
-        vector<Edge> cands;
+        vector<Edge> cands; cands.reserve(path.size());
         for (int n = 0; n + 1 < path.size(); n++) {
             auto [i3, j3] = path[n];
             auto [i4, j4] = path[n + 1];
@@ -436,7 +452,7 @@ struct TreeModifier {
             for (int t = 0; t < 16; t++) {
                 new_cost += abs(target_ctr[t] - tree_ctr[t]);
             }
-            if (new_cost <= cost && chmin(min_cost, new_cost)) {
+            if (chmin(min_cost, new_cost)) {
                 min_edge = e2;
             }
             toggle_edge(i3, j3, i4, j4);
@@ -454,8 +470,463 @@ struct TreeModifier {
             disabled_edges.pop_back();
             disabled_edges.emplace_back(i3, j3, i4, j4);
         }
-        dump(cost);
+        //dump(cost);
     }
+
+};
+
+namespace NFlow {
+
+    struct PrimalDual {
+        const int INF;
+
+        struct edge {
+            int to;
+            int cap;
+            int cost;
+            int rev;
+            bool isrev;
+            edge(int to = -1, int cap = -1, int cost = -1, int rev = -1, bool isrev = false)
+                : to(to), cap(cap), cost(cost), rev(rev), isrev(isrev) {}
+        };
+
+        vector<vector<edge>> graph;
+        vector<int> potential, min_cost;
+        vector<int> prevv, preve;
+
+        PrimalDual(int V) : INF(std::numeric_limits<int>::max()), graph(V) {}
+
+        void add_edge(int from, int to, int cap, int cost) {
+            graph[from].emplace_back(to, cap, cost, (int)graph[to].size(), false);
+            graph[to].emplace_back(from, 0, -cost, (int)graph[from].size() - 1, true);
+        }
+
+        int min_cost_flow(int s, int t, int f) {
+            int V = (int)graph.size();
+            int ret = 0;
+            using Pi = ll;
+            std::priority_queue<Pi, vector<Pi>, std::greater<Pi>> que;
+            potential.assign(V, 0);
+            preve.assign(V, -1);
+            prevv.assign(V, -1);
+
+            while (f > 0) {
+                min_cost.assign(V, INF);
+                que.emplace(s);
+                min_cost[s] = 0;
+                while (!que.empty()) {
+                    Pi p = que.top(); que.pop();
+                    int pf = p >> 32, ps = p & 0xFFFFFFFFLL;
+                    if (min_cost[ps] < pf) continue;
+                    for (int i = 0; i < (int)graph[ps].size(); i++) {
+                        edge& e = graph[ps][i];
+                        int nextCost = min_cost[ps] + e.cost + potential[ps] - potential[e.to];
+                        if (e.cap > 0 && min_cost[e.to] > nextCost) {
+                            min_cost[e.to] = nextCost;
+                            prevv[e.to] = ps, preve[e.to] = i;
+                            que.emplace(((ll)min_cost[e.to] << 32) | e.to);
+                        }
+                    }
+                }
+                if (min_cost[t] == INF) return -1;
+                for (int v = 0; v < V; v++) potential[v] += min_cost[v];
+                int addflow = f;
+                for (int v = t; v != s; v = prevv[v]) {
+                    addflow = std::min(addflow, graph[prevv[v]][preve[v]].cap);
+                }
+                f -= addflow;
+                ret += addflow * potential[t];
+                for (int v = t; v != s; v = prevv[v]) {
+                    edge& e = graph[prevv[v]][preve[v]];
+                    e.cap -= addflow;
+                    graph[v][e.rev].cap += addflow;
+                }
+            }
+            return ret;
+        }
+
+        void output() {
+            for (int i = 0; i < (int)graph.size(); i++) {
+                for (auto& e : graph[i]) {
+                    if (e.isrev) continue;
+                    auto& rev_e = graph[e.to][e.rev];
+                    cout << i << "->" << e.to << " (flow: " << rev_e.cap << "/" << rev_e.cap + e.cap << ")" << endl;
+                }
+            }
+        }
+    };
+
+    struct Node {
+        int id, i, j;
+        Node(int id = -1, int i = -1, int j = -1) : id(id), i(i), j(j) {}
+        std::string str() const {
+            return format("Node [id=%d, p=(%d, %d)]", id, i, j);
+        }
+        friend std::ostream& operator<<(std::ostream& o, const Node& obj) {
+            o << obj.str();
+            return o;
+        }
+    };
+
+    using Assign = std::pair<Node, Node>;
+
+    struct Result {
+        int total_cost;
+        vector<vector<Assign>> type_to_assign;
+    };
+
+    vector<Assign> get_assign(
+        const vector<Node>& S, const vector<Node>& T, const PrimalDual& pd) {
+        int ns = S.size();
+        vector<Assign> assign;
+        for (int u = 1; u <= (int)S.size(); u++) {
+            for (const auto& e : pd.graph[u]) {
+                if (e.isrev) continue;
+                const auto& rev_e = pd.graph[e.to][e.rev];
+                if (!rev_e.cap) continue;
+                // i -> e.to
+                int v = e.to;
+                assign.emplace_back(S[u - 1], T[v - ns - 1]);
+            }
+        }
+        return assign;
+    }
+
+    Result calc_assign(const vector<vector<int>>& src, const vector<vector<int>>& dst) {
+        Result result;
+        result.type_to_assign.resize(16);
+        // create nodes
+        int N = src.size();
+        vector<vector<Node>> S(16), T(16);
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                int sc = src[i][j];
+                S[sc].emplace_back(S[sc].size() + 1, i, j);
+            }
+        }
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                int tc = dst[i][j];
+                T[tc].emplace_back(S[tc].size() + T[tc].size() + 1, i, j);
+            }
+        }
+        // mincostflow
+        int total_cost = 0;
+        for (int t = 0; t < 16; t++) {
+            if (S[t].empty()) continue;
+            int ns = S[t].size(), nt = T[t].size();
+            int V = ns + nt + 2;
+            PrimalDual pd(V);
+            // u=0 から v in 1..s に容量 1, コスト 0 の辺を張る
+            for (const auto& v : S[t]) {
+                pd.add_edge(0, v.id, 1, 0);
+            }
+            // u in 1..s から v in s+1...s+t に容量 inf, コスト dist(u, v) の辺を張る
+            for (const auto& u : S[t]) {
+                for (const auto& v : T[t]) {
+                    int dist = abs(u.i - v.i) + abs(u.j - v.j);
+                    pd.add_edge(u.id, v.id, pd.INF, dist);
+                }
+            }
+            // u in s+1...s+t から v=s+t+1 に容量 1, コスト 0 の辺を張る
+            for (const auto& v : T[t]) {
+                pd.add_edge(v.id, V - 1, 1, 0);
+            }
+            //double elapsed = timer.elapsedMs();
+            int cost = pd.min_cost_flow(0, V - 1, ns);
+            //dump(c, cost, V, timer.elapsedMs() - elapsed);
+            total_cost += cost;
+
+            result.type_to_assign[t] = get_assign(S[t], T[t], pd);
+        }
+
+        result.total_cost = total_cost;
+
+        return result;
+    }
+
+}
+
+
+
+struct NPuzzle {
+
+    int N;
+    int ei, ej;
+    vector<vector<int>> tiles;
+    vector<vector<bool>> fixed;
+    string cmds;
+
+    // 4x4 の場合
+    // 0 を (0,0) に移動
+    // 1 を (0,1) に移動
+    // 2 を (0,2) に移動
+    // 3 を (0+2,3) に移動
+    // 空きマスを (0+1,2) に移動
+    // URDLURDDLUURD (2,3 が揃う)
+    // 4 を (1,0) に移動
+    // 8 を (2,0) に移動
+    // 12 を (3,0+2) に移動
+    // 空きマスを (2,0+1) に移動
+    // LDRULDRRULLDR (8,12 が揃う)
+    // ...
+
+    NPuzzle(int N, const NFlow::Result& assign) : N(N) {
+        tiles.resize(N, vector<int>(N));
+        fixed.resize(N, vector<bool>(N));
+        for (const auto& as : assign.type_to_assign) {
+            for (const auto& a : as) {
+                tiles[a.first.i][a.first.j] = a.second.i * N + a.second.j;
+            }
+        }
+        std::tie(ei, ej) = get_pos(N * N - 1);
+    }
+
+    bool is_solvable() const {
+        // 転倒数の偶奇と空マスの偶奇が等しければ解ける
+        int inv = 0;
+        for (int i = 0; i < N * N - 1; i++) {
+            for (int j = i + 1; j < N * N; j++) {
+                inv += tiles[i / N][i % N] > tiles[j / N][j % N];
+            }
+        }
+        int dist = abs(ei - (N - 1)) + abs(ej - (N - 1));
+        return inv % 2 == dist % 2;
+    }
+
+    void run() {
+        for (int layer = 0; layer < N - 2; layer++) {
+            align(layer);
+        }
+        move_number(IJ(N - 2, N - 2), N - 2, N - 2);
+        move_empty_cell(N - 1, N - 1);
+    }
+
+    inline pii get_pos(int n) const {
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                if (tiles[i][j] == n) {
+                    return { i, j };
+                }
+            }
+        }
+        assert(false);
+        return { -1, -1 };
+    }
+
+    inline int IJ(int i, int j) const {
+        return i * N + j;
+    }
+
+    void align(int layer) {
+
+        vector<std::pair<int, bool>> pib; // (target num, 特殊処理?)
+        pib.emplace_back(IJ(layer, layer), false);
+        for (int j = layer + 1; j < N - 1; j++) {
+            pib.emplace_back(IJ(layer, j), false);
+        }
+        pib.emplace_back(IJ(layer, N - 1), true);
+        for (int i = layer + 1; i < N - 1; i++) {
+            pib.emplace_back(IJ(i, layer), false);
+        }
+        pib.emplace_back(IJ(N - 1, layer), true);
+
+        for (auto [n, f] : pib) {
+            int ti = n / N, tj = n % N; // 目的地
+            if (f) {
+                auto [si, sj] = get_pos(n);
+                int dist = abs(si - ti) + abs(sj - tj);
+                // 特殊処理
+                if (dist == 0) {
+                    // 既に揃っている
+                    fixed[ti][tj] = true;
+                }
+                else if (tiles[ti][tj] == N * N - 1 && dist == 1) {
+                    // 目的地が空マスで、距離が 1
+                    int dir = get_dir(ti, tj, si, sj);
+                    move(d2c[dir]);
+                    fixed[ti][tj] = true;
+                }
+                else {
+                    if (tj == N - 1) {
+                        move_number(n, ti + 2, tj);
+                        move_empty_cell(ti + 1, tj - 1);
+                        fixed[ti][tj - 1] = fixed[ti + 2][tj] = false;
+                        move("URDLURDDLUURD");
+                        fixed[ti][tj - 1] = fixed[ti][tj] = true;
+                    }
+                    else {
+                        move_number(n, ti, tj + 2);
+                        move_empty_cell(ti - 1, tj + 1);
+                        fixed[ti - 1][tj] = fixed[ti][tj + 2] = false;
+                        move("LDRULDRRULLDR");
+                        fixed[ti - 1][tj] = fixed[ti][tj] = true;
+                    }
+
+                }
+            }
+            else {
+                move_number(n, ti, tj);
+            }
+        }
+
+    }
+
+    inline void move(char c) {
+        int d = c2d[c];
+        std::swap(tiles[ei][ej], tiles[ei + di[d]][ej + dj[d]]);
+        ei += di[d]; ej += dj[d];
+        if (!cmds.empty() && ((c2d[c] + 2) & 3) == c2d[cmds.back()]) {
+            cmds.pop_back();
+        }
+        else {
+            cmds += c;
+        }
+        //show();
+    }
+
+    inline void move(const string& s) {
+        for (char c : s) move(c);
+    }
+
+    vector<pii> calc_zigzag_shortest_path(int si, int sj, int ti, int tj) const {
+        assert(!(si == ti && sj == tj));
+        bool seen[10][10];
+        pii prev[10][10];
+        Fill(seen, false);
+        Fill(prev, pii(-1, -1));
+        // TODO: abs(ti-si), abs(tj-sj) の大小で最初の移動方向を変化させる
+        std::queue<std::tuple<int, int, int>> qu({ {si, sj, -1} }); // (i,j,prev_dir)
+        seen[si][sj] = true;
+        while (!qu.empty()) {
+            auto [i, j, pd] = qu.front(); qu.pop();
+            if (i == ti && j == tj) break;
+            for (int d = 0; d < 4; d++) if (d != pd) {
+                int ni = i + di[d], nj = j + dj[d];
+                if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj] || seen[ni][nj]) continue;
+                seen[ni][nj] = true;
+                prev[ni][nj] = { i, j };
+                qu.emplace(ni, nj, d);
+            }
+            if (pd != -1) {
+                int ni = i + di[pd], nj = j + dj[pd];
+                if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj] || seen[ni][nj]) continue;
+                seen[ni][nj] = true;
+                prev[ni][nj] = { i, j };
+                qu.emplace(ni, nj, pd);
+            }
+        }
+        assert(prev[ti][tj].first != -1);
+        vector<pii> path;
+        {
+            pii p(ti, tj);
+            path.push_back(p);
+            while (p.first != -1) {
+                p = prev[p.first][p.second];
+                if (p.first == -1) break;
+                path.push_back(p);
+            }
+            reverse(path.begin(), path.end());
+        }
+        return path;
+    }
+
+    void move_empty_cell(int ti, int tj) {
+        if (ei == ti && ej == tj) {
+            return;
+        }
+        // empty cell を (ti,tj) まで動かす
+        bool seen[10][10];
+        pii prev[10][10];
+        Fill(seen, false);
+        Fill(prev, pii(-1, -1));
+        std::queue<pii> qu({ {ei, ej} }); // (i,j,prev_dir)
+        seen[ei][ej] = true;
+        while (!qu.empty()) {
+            auto [i, j] = qu.front(); qu.pop();
+            if (i == ti && j == tj) break;
+            for (int d = 0; d < 4; d++) {
+                int ni = i + di[d], nj = j + dj[d];
+                if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj] || seen[ni][nj]) continue;
+                seen[ni][nj] = true;
+                prev[ni][nj] = { i, j };
+                qu.emplace(ni, nj);
+            }
+        }
+        vector<pii> path;
+        {
+            pii p(ti, tj);
+            path.push_back(p);
+            while (p.first != -1) {
+                p = prev[p.first][p.second];
+                if (p.first == -1) break;
+                path.push_back(p);
+            }
+            reverse(path.begin(), path.end());
+        }
+        for (int i = 0; i + 1 < path.size(); i++) {
+            auto [i1, j1] = path[i];
+            auto [i2, j2] = path[i + 1];
+            int dir = get_dir(i1, j1, i2, j2);
+            move(d2c[dir]);
+        }
+    }
+
+    int get_dir(int si, int sj, int ti, int tj) const {
+        if (si == ti) {
+            return sj < tj ? c2d['R'] : c2d['L'];
+        }
+        return si < ti ? c2d['D'] : c2d['U'];
+    }
+
+    void move_number(int n, int ti, int tj) {
+
+        // 数字 n を (ti, tj) まで移動させる
+        // n から (ti, tj) までなるべく蛇行しながら到達するルートを求める (fixed を避ける)
+
+        auto [si, sj] = get_pos(n);
+
+        if (si == ti && sj == tj) {
+            fixed[ti][tj] = true;
+            return;
+        }
+
+        auto path = calc_zigzag_shortest_path(si, sj, ti, tj);
+
+        for (int k = 0; k + 1 < path.size(); k++) {
+            auto [i1, j1] = path[k];
+            auto [i2, j2] = path[k + 1];
+            // 空マスを (i2,j2) に移動させる
+            fixed[i1][j1] = true;
+            move_empty_cell(i2, j2);
+            fixed[i1][j1] = false;
+            int dir = get_dir(i2, j2, i1, j1);
+            move(d2c[dir]);
+        }
+
+        fixed[ti][tj] = true;
+    }
+
+#ifdef HAVE_OPENCV_HIGHGUI
+    void show(int delay = 0) {
+        int N = tiles.size();
+        int sz = 800 / N, H = sz * N, W = sz * N;
+        cv::Mat_<cv::Vec3b> img(H, W, cv::Vec3b(255, 255, 255));
+        for (int i = 0; i <= N; i++) {
+            cv::line(img, cv::Point(0, i * sz), cv::Point(W, i * sz), cv::Scalar(200, 200, 200), 2);
+            cv::line(img, cv::Point(i * sz, 0), cv::Point(i * sz, H), cv::Scalar(200, 200, 200), 2);
+        }
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                if (tiles[i][j] == N * N - 1) continue;
+                cv::Point ctr(j * sz + sz / 3, i * sz + sz / 2);
+                cv::putText(img, std::to_string(tiles[i][j]), ctr, cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 0), 2);
+            }
+        }
+        cv::imshow("img", img);
+        cv::waitKey(delay);
+    }
+#endif
 
 };
 
@@ -588,7 +1059,7 @@ void show(const vector<vector<int>>& tiles, int delay = 0) {
             cv::Point ctr(j * sz + sz / 2, i * sz + sz / 2);
             for (int d = 0; d < 4; d++) if (tiles[i][j] >> d & 1) {
                 cv::Point dv(dj[d] * sz / 2, di[d] * sz / 2);
-                cv::line(img, ctr, ctr + dv, cv::Scalar(0, 0, 0), 3);
+                cv::line(img, ctr, ctr + dv, cv::Scalar(0, 0, 0), 10);
             }
         }
     }
@@ -599,8 +1070,15 @@ void show(const vector<vector<int>>& tiles, int delay = 0) {
 
 int main(int argc, char** argv) {
 
+    Timer timer;
+
 #ifdef HAVE_OPENCV_HIGHGUI
     cv::utils::logging::setLogLevel(cv::utils::logging::LogLevel::LOG_LEVEL_SILENT);
+#endif
+
+#ifdef _MSC_VER
+    std::ifstream ifs("tools/in/0004.txt");
+    std::istream& cin = ifs;
 #endif
 
     c2d['L'] = 0; c2d['U'] = 1; c2d['R'] = 2; c2d['D'] = 3;
@@ -609,32 +1087,36 @@ int main(int argc, char** argv) {
 
     auto input = parse_input(cin);
 
-    auto calc_dist = [](const Input& src, const Input& dst) {
-        int ctr[16] = {}, N = src.N;
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                ctr[src.tiles[i][j]]++;
-                ctr[dst.tiles[i][j]]--;
+    //TreeModifier tmod(input, generate_tree(input.N, rnd));
+
+    int min_cost = INT_MAX, loop = 0;
+    string ans;
+    while (timer.elapsed_ms() < 2900) {
+        TreeModifier tmod(input, generate_tree(input.N, rnd));
+        while (tmod.cost) {
+            tmod.local_search(rnd);
+        }
+        if (!tmod.cost) {
+            auto res = NFlow::calc_assign(input.tiles, tmod.tiles);
+            NPuzzle puz(input.N, res);
+            if (puz.is_solvable()) {
+                puz.run();
+                if (chmin(min_cost, (int)puz.cmds.size())) {
+                    ans = puz.cmds;
+                    dump(min_cost);
+                }
+                loop++;
             }
         }
-        int d = 0;
-        for (int t = 0; t < 16; t++) {
-            d += abs(ctr[t]);
-        }
-        return d;
-    };
-
-    int min_dist = INT_MAX;
-    auto target = input;
-
-    TreeModifier tmod(target, generate_tree(input.N, rnd));
-
-    while (tmod.cost) {
-        tmod.local_search(rnd);
     }
+    dump(loop);
 
-    show(tmod.tiles);
-    show(input.tiles);
+    if (ans.size() > input.T) {
+        ans = ans.substr(0, input.T);
+    }
+    
+    dump(ans.size(), double(ans.size()) / input.T);
+    cout << ans << endl;
 
     return 0;
 }
