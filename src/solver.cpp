@@ -281,6 +281,7 @@ Input parse_input(std::istream& in) {
     return { N, T, tiles };
 }
 
+// TODO: 空欄を右下に限定しない方法
 Input generate_tree(int N, Xorshift& rnd) {
     int T = 2 * N * N * N;
     vector<vector<int>> tiles(N, vector<int>(N));
@@ -685,6 +686,8 @@ namespace NBeam2 {
 
     }
 
+    struct State;
+    using StatePtr = std::shared_ptr<State>;
     struct State {
 
         int16_t turn, cost;
@@ -698,7 +701,6 @@ namespace NBeam2 {
 
             turn = cost = 0;
             Fill(tiles, -1);
-            dump(tiles);
             eij = -1;
             pdir = -1;
             Fill(cmds, 0);
@@ -725,7 +727,72 @@ namespace NBeam2 {
             return abs(I(ij) - I(tij)) + abs(J(ij) - J(tij));
         }
 
+        inline bool can_move(int dir) const {
+            return !(((dir + 2) & 3) == pdir || g_oob[eij + dij[dir]]);
+        }
+
+        inline void move(int dir) {
+            int nij = eij + dij[dir];
+            cost -= cell_cost(nij);
+            hash ^= g_hash_table[eij][tiles[eij]]; hash ^= g_hash_table[nij][tiles[nij]];
+            std::swap(tiles[eij], tiles[nij]);
+            hash ^= g_hash_table[eij][tiles[eij]]; hash ^= g_hash_table[nij][tiles[nij]];
+            cost += cell_cost(eij);
+            eij = nij;
+            pdir = dir;
+            // 1 byte に 4 個
+            cmds[turn >> 2] ^= dir << ((turn & 3) << 1);
+            turn++;
+        }
+
+        void add_next_states(vector<StatePtr>& dst, std::unordered_set<uint64_t>& seen) {
+            for (int d = 0; d < 4; d++) {
+                if (!can_move(d)) continue;
+                auto ns = std::make_shared<State>(*this);
+                ns->move(d);
+                if (!seen.count(ns->hash)) {
+                    dst.push_back(ns);
+                    seen.insert(ns->hash);
+                }
+            }
+        }
+
+        string get_cmd() const {
+            string res;
+            for (int t = 0; t < turn; t++) {
+                res += d2c[(cmds[t >> 2] >> ((t & 3) << 1)) & 3];
+            }
+            return res;
+        }
+
     };
+
+    StatePtr beam_search(StatePtr init_state, double duration) {
+        Timer timer;
+        StatePtr best_state = init_state;
+        vector<StatePtr> now_states({ init_state });
+        std::unordered_set<unsigned long long> seen; seen.reserve(10000000);
+        seen.insert(init_state->hash);
+        int width = 30000, turn = 0;
+        while (!now_states.empty() && turn < g_T && timer.elapsed_ms() < duration && best_state->cost) {
+            vector<StatePtr> next_states; next_states.reserve(100000);
+            for (int n = 0; n < std::min(width, (int)now_states.size()); n++) {
+                now_states[n]->add_next_states(next_states, seen);
+            }
+            if (next_states.empty()) break;
+            sort(next_states.begin(), next_states.end(), [](StatePtr& a, StatePtr& b) { return a->cost < b->cost; });
+            now_states = next_states;
+            if (now_states.front()->cost < best_state->cost) {
+                best_state = now_states.front();
+                //cerr << best_state->cost << ": " << timer.elapsed_ms() << endl;
+                dump(turn, best_state->cost);
+            }
+            turn++;
+        }
+        dump(seen.size());
+        cerr << best_state->get_cmd() << endl;
+        return best_state;
+    }
 
 }
 
@@ -1245,10 +1312,10 @@ int main(int argc, char** argv) {
     dump(loop);
 
     {
-        NBeam::StatePtr bs = std::make_shared<NBeam::State>(input, assign);
-        NBeam2::State s(input, assign);
-        exit(1);
-        bs = NBeam::beam_search(bs, INT_MAX);
+        NBeam2::setup(input);
+        NBeam2::StatePtr bs2 = std::make_shared<NBeam2::State>(input, assign);
+        bs2 = NBeam2::beam_search(bs2, INT_MAX);
+        ans = bs2->get_cmd();
     }
 #endif
 
