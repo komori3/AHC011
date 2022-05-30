@@ -48,14 +48,14 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(CPP_INCLUDE);$(OPENCV_INCLUDE);$(IncludePath)</IncludePath>
+    <IncludePath>$(CPP_INCLUDE);$(OPENCV_INCLUDE);$(BOOST_ROOT)\include\boost-1_78;$(IncludePath)</IncludePath>
     <LibraryPath>$(OPENCV_LIB);$(LibraryPath)</LibraryPath>
     <OutDir>$(ProjectDir)\bin\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)\obj\$(Configuration)\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(CPP_INCLUDE);$(OPENCV_INCLUDE);$(IncludePath)</IncludePath>
+    <IncludePath>$(CPP_INCLUDE);$(OPENCV_INCLUDE);$(BOOST_ROOT)\include\boost-1_78;$(IncludePath)</IncludePath>
     <LibraryPath>$(OPENCV_LIB);$(LibraryPath)</LibraryPath>
     <OutDir>$(ProjectDir)\bin\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)\obj\$(Configuration)\</IntDir>

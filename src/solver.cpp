@@ -1,11 +1,9 @@
 #define _CRT_NONSTDC_NO_WARNINGS
+#define _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING
 #include <bits/stdc++.h>
 #include <random>
 #include <unordered_set>
 #include <array>
-//#include <atcoder/all>
-//#include <boost/multiprecision/cpp_int.hpp>
-//#include <boost/multiprecision/cpp_bin_float.hpp>
 #ifdef _MSC_VER
 #include <opencv2/core.hpp>
 #include <opencv2/core/utils/logger.hpp>
@@ -15,6 +13,7 @@
 #include <ppl.h>
 #include <filesystem>
 #include <intrin.h>
+#include <boost/multiprecision/cpp_int.hpp>
 int __builtin_clz(unsigned int n)
 {
     unsigned long index;
@@ -30,11 +29,299 @@ int __builtin_ctz(unsigned int n)
 namespace std {
     inline int __lg(int __n) { return sizeof(int) * 8 - 1 - __builtin_clz(__n); }
 }
+using __uint128_t = boost::multiprecision::uint128_t;
 #else
 #pragma GCC target("avx2")
 #pragma GCC optimize("O3")
 #pragma GCC optimize("unroll-loops")
 #endif
+
+// hashset: https://nyaannyaan.github.io/library/hashmap/hashset.hpp
+namespace HashMapImpl {
+
+    using namespace std;
+
+    using u32 = uint32_t;
+    using u64 = uint64_t;
+
+    template <typename Key, typename Data>
+    struct HashMapBase;
+
+    template <typename Key, typename Data>
+    struct itrB
+        : iterator<bidirectional_iterator_tag, Data, ptrdiff_t, Data*, Data&> {
+        using base =
+            iterator<bidirectional_iterator_tag, Data, ptrdiff_t, Data*, Data&>;
+        using ptr = typename base::pointer;
+        using ref = typename base::reference;
+
+        u32 i;
+        HashMapBase<Key, Data>* p;
+
+        explicit constexpr itrB() : i(0), p(nullptr) {}
+        explicit constexpr itrB(u32 _i, HashMapBase<Key, Data>* _p) : i(_i), p(_p) {}
+        explicit constexpr itrB(u32 _i, const HashMapBase<Key, Data>* _p)
+            : i(_i), p(const_cast<HashMapBase<Key, Data>*>(_p)) {}
+        friend void swap(itrB& l, itrB& r) { swap(l.i, r.i), swap(l.p, r.p); }
+        friend bool operator==(const itrB& l, const itrB& r) { return l.i == r.i; }
+        friend bool operator!=(const itrB& l, const itrB& r) { return l.i != r.i; }
+        const ref operator*() const {
+            return const_cast<const HashMapBase<Key, Data>*>(p)->data[i];
+        }
+        ref operator*() { return p->data[i]; }
+        ptr operator->() const { return &(p->data[i]); }
+
+        itrB& operator++() {
+            assert(i != p->cap && "itr::operator++()");
+            do {
+                i++;
+                if (i == p->cap) break;
+                if (p->flag[i] == true && p->dflag[i] == false) break;
+            } while (true);
+            return (*this);
+        }
+        itrB operator++(int) {
+            itrB it(*this);
+            ++(*this);
+            return it;
+        }
+        itrB& operator--() {
+            do {
+                i--;
+                if (p->flag[i] == true && p->dflag[i] == false) break;
+                assert(i != 0 && "itr::operator--()");
+            } while (true);
+            return (*this);
+        }
+        itrB operator--(int) {
+            itrB it(*this);
+            --(*this);
+            return it;
+        }
+    };
+    // The std::iterator class template (used as a base class to provide typedefs) is deprecated in C++17. (The <iterator> header is NOT deprecated.) The C++ Standard has never required user - defined iterators to derive from std::iterator.To fix this warning, stop deriving from std::iteratorand start providing publicly accessible typedefs named iterator_category, value_type, difference_type, pointer, and reference.Note that value_type is required to be non - const, even for constant iterators.You can define _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to acknowledge that you have received this warning.AHC011	C : \Users\komori3\OneDrive\dev\compro\heuristic\tasks\AHC011\src\solver.cpp	235
+
+    template <typename Key, typename Data>
+    struct HashMapBase {
+        using u32 = uint32_t;
+        using u64 = uint64_t;
+        using iterator = itrB<Key, Data>;
+        using itr = iterator;
+
+    protected:
+        template <typename K>
+        inline u64 randomized(const K& key) const {
+            return u64(key) ^ r;
+        }
+
+        template <typename K,
+            enable_if_t<is_same<K, Key>::value, nullptr_t> = nullptr,
+            enable_if_t<is_integral<K>::value, nullptr_t> = nullptr>
+            inline u32 inner_hash(const K& key) const {
+            return (randomized(key) * 11995408973635179863ULL) >> shift;
+        }
+        template <
+            typename K, enable_if_t<is_same<K, Key>::value, nullptr_t> = nullptr,
+            enable_if_t<is_integral<decltype(K::first)>::value, nullptr_t> = nullptr,
+            enable_if_t<is_integral<decltype(K::second)>::value, nullptr_t> = nullptr>
+            inline u32 inner_hash(const K& key) const {
+            u64 a = randomized(key.first), b = randomized(key.second);
+            a *= 11995408973635179863ULL;
+            b *= 10150724397891781847ULL;
+            return (a + b) >> shift;
+        }
+        template <typename K,
+            enable_if_t<is_same<K, Key>::value, nullptr_t> = nullptr,
+            enable_if_t<is_integral<typename K::value_type>::value, nullptr_t> =
+            nullptr>
+            inline u32 inner_hash(const K& key) const {
+            static constexpr u64 mod = (1LL << 61) - 1;
+            static constexpr u64 base = 950699498548472943ULL;
+            u64 res = 0;
+            for (auto& elem : key) {
+                __uint128_t x = __uint128_t(res) * base + (randomized(elem) & mod);
+                res = (x & mod) + (x >> 61);
+            }
+            __uint128_t x = __uint128_t(res) * base;
+            res = (x & mod) + (x >> 61);
+            if (res >= mod) res -= mod;
+            return res >> (shift - 3);
+        }
+
+        template <typename D = Data,
+            enable_if_t<is_same<D, Key>::value, nullptr_t> = nullptr>
+            inline u32 hash(const D& dat) const {
+            return inner_hash(dat);
+        }
+        template <
+            typename D = Data,
+            enable_if_t<is_same<decltype(D::first), Key>::value, nullptr_t> = nullptr>
+            inline u32 hash(const D& dat) const {
+            return inner_hash(dat.first);
+        }
+
+        template <typename D = Data,
+            enable_if_t<is_same<D, Key>::value, nullptr_t> = nullptr>
+            inline Key dtok(const D& dat) const {
+            return dat;
+        }
+        template <
+            typename D = Data,
+            enable_if_t<is_same<decltype(D::first), Key>::value, nullptr_t> = nullptr>
+            inline Key dtok(const D& dat) const {
+            return dat.first;
+        }
+
+        void reallocate(u32 ncap) {
+            vector<Data> ndata(ncap);
+            vector<bool> nf(ncap);
+            shift = 64 - __lg(ncap);
+            for (u32 i = 0; i < cap; i++) {
+                if (flag[i] == true && dflag[i] == false) {
+                    u32 h = hash(data[i]);
+                    while (nf[h]) h = (h + 1) & (ncap - 1);
+                    ndata[h] = move(data[i]);
+                    nf[h] = true;
+                }
+            }
+            data.swap(ndata);
+            flag.swap(nf);
+            cap = ncap;
+            dflag.resize(cap);
+            fill(std::begin(dflag), std::end(dflag), false);
+        }
+
+        inline bool extend_rate(u32 x) const { return x * 2 >= cap; }
+
+        inline bool shrink_rate(u32 x) const {
+            return HASHMAP_DEFAULT_SIZE < cap&& x * 10 <= cap;
+        }
+
+        inline void extend() { reallocate(cap << 1); }
+
+        inline void shrink() { reallocate(cap >> 1); }
+
+    public:
+        u32 cap, s;
+        vector<Data> data;
+        vector<bool> flag, dflag;
+        u32 shift;
+        static u64 r;
+        static constexpr uint32_t HASHMAP_DEFAULT_SIZE = 4;
+
+        explicit HashMapBase()
+            : cap(HASHMAP_DEFAULT_SIZE),
+            s(0),
+            data(cap),
+            flag(cap),
+            dflag(cap),
+            shift(64 - __lg(cap)) {}
+
+        itr begin() const {
+            u32 h = 0;
+            while (h != cap) {
+                if (flag[h] == true && dflag[h] == false) break;
+                h++;
+            }
+            return itr(h, this);
+        }
+        itr end() const { return itr(this->cap, this); }
+
+        friend itr begin(const HashMapBase& h) { return h.begin(); }
+        friend itr end(const HashMapBase& h) { return h.end(); }
+
+        itr find(const Key& key) const {
+            u32 h = inner_hash(key);
+            while (true) {
+                if (flag[h] == false) return this->end();
+                if (dtok(data[h]) == key) {
+                    if (dflag[h] == true) return this->end();
+                    return itr(h, this);
+                }
+                h = (h + 1) & (cap - 1);
+            }
+        }
+
+        bool contain(const Key& key) const { return find(key) != this->end(); }
+
+        itr insert(const Data& d) {
+            u32 h = hash(d);
+            while (true) {
+                if (flag[h] == false) {
+                    if (extend_rate(s + 1)) {
+                        extend();
+                        h = hash(d);
+                        continue;
+                    }
+                    data[h] = d;
+                    flag[h] = true;
+                    ++s;
+                    return itr(h, this);
+                }
+                if (dtok(data[h]) == dtok(d)) {
+                    if (dflag[h] == true) {
+                        data[h] = d;
+                        dflag[h] = false;
+                        ++s;
+                    }
+                    return itr(h, this);
+                }
+                h = (h + 1) & (cap - 1);
+            }
+        }
+
+        // tips for speed up :
+        // if return value is unnecessary, make argument_2 false.
+        itr erase(itr it, bool get_next = true) {
+            if (it == this->end()) return this->end();
+            s--;
+            if (shrink_rate(s)) {
+                Data d = data[it.i];
+                shrink();
+                it = find(dtok(d));
+            }
+            int ni = (it.i + 1) & (cap - 1);
+            if (this->flag[ni]) {
+                this->dflag[it.i] = true;
+            }
+            else {
+                this->flag[it.i] = false;
+            }
+            if (get_next) ++it;
+            return it;
+        }
+
+        itr erase(const Key& key) { return erase(find(key)); }
+
+        bool empty() const { return s == 0; }
+
+        int size() const { return s; }
+
+        void clear() {
+            fill(std::begin(flag), std::end(flag), false);
+            fill(std::begin(dflag), std::end(dflag), false);
+            s = 0;
+        }
+
+        void reserve(int n) {
+            if (n <= 0) return;
+            n = 1 << min(23, __lg(n) + 2);
+            if (cap < u32(n)) reallocate(n);
+        }
+    };
+
+    template <typename Key, typename Data>
+    uint64_t HashMapBase<Key, Data>::r =
+        chrono::duration_cast<chrono::nanoseconds>(
+            chrono::high_resolution_clock::now().time_since_epoch())
+        .count();
+
+}  // namespace HashMapImpl
+
+template <typename Key>
+struct HashSet : HashMapImpl::HashMapBase<Key, Key> {
+    using HashMapImpl::HashMapBase<Key, Key>::HashMapBase;
+};
 
 /** compro_io **/
 
@@ -633,9 +920,7 @@ namespace NFlow {
             for (const auto& v : T[t]) {
                 pd.add_edge(v.id, V - 1, 1, 0);
             }
-            //double elapsed = timer.elapsedMs();
             int cost = pd.min_cost_flow(0, V - 1, ns);
-            //dump(c, cost, V, timer.elapsedMs() - elapsed);
             total_cost += cost;
 
             result.type_to_assign[t] = get_assign(S[t], T[t], pd);
@@ -649,7 +934,7 @@ namespace NFlow {
 }
 
 
-namespace NBeam2 {
+namespace NBeam {
 
     // 1-indexed にして out of bound 判定を速くする
     // 省メモリ
@@ -657,7 +942,7 @@ namespace NBeam2 {
 
     constexpr int dij[] = { -1, -16, 1, 16 }; // LURD
 
-    uint8_t g_N, g_T;
+    int g_N, g_T;
     bool g_oob[192]; // out of bound
     uint64_t g_hash_table[192][192];
 
@@ -696,6 +981,8 @@ namespace NBeam2 {
         int8_t pdir;
         uint8_t cmds[512]; // >= 2bit * 2000
         uint64_t hash;
+
+        State() : cost(SHRT_MAX) {}
 
         State(const Input& input, const NFlow::Result& assign) {
 
@@ -745,18 +1032,6 @@ namespace NBeam2 {
             turn++;
         }
 
-        void add_next_states(vector<StatePtr>& dst, std::unordered_set<uint64_t>& seen) {
-            for (int d = 0; d < 4; d++) {
-                if (!can_move(d)) continue;
-                auto ns = std::make_shared<State>(*this);
-                ns->move(d);
-                if (!seen.count(ns->hash)) {
-                    dst.push_back(ns);
-                    seen.insert(ns->hash);
-                }
-            }
-        }
-
         string get_cmd() const {
             string res;
             for (int t = 0; t < turn; t++) {
@@ -767,30 +1042,70 @@ namespace NBeam2 {
 
     };
 
-    StatePtr beam_search(StatePtr init_state, double duration) {
+
+
+    State beam_search(State init_state, double duration) {
+        static constexpr int beam_width = 10000, degree = 4;
+        static State sbuf[2][beam_width * degree];
+        static int ord[beam_width * degree];
+
         Timer timer;
-        StatePtr best_state = init_state;
-        vector<StatePtr> now_states({ init_state });
-        std::unordered_set<unsigned long long> seen; seen.reserve(10000000);
-        seen.insert(init_state->hash);
-        int width = 30000, turn = 0;
-        while (!now_states.empty() && turn < g_T && timer.elapsed_ms() < duration && best_state->cost) {
-            vector<StatePtr> next_states; next_states.reserve(100000);
-            for (int n = 0; n < std::min(width, (int)now_states.size()); n++) {
-                now_states[n]->add_next_states(next_states, seen);
+
+        int now_buffer = 0;
+        int buf_size[2] = {};
+
+        sbuf[now_buffer][0] = init_state;
+        ord[0] = 0;
+        buf_size[now_buffer]++;
+
+        State best_state(init_state);
+        HashSet<unsigned long long> seen; seen.reserve(30000000);
+        //std::unordered_set<unsigned long long> seen; seen.reserve(30000000);
+        seen.insert(init_state.hash);
+
+        int turn = 0;
+        while (buf_size[now_buffer] && turn < g_T && timer.elapsed_ms() < duration && best_state.cost) {
+
+            auto& now_states = sbuf[now_buffer];
+            auto& now_size = sbuf[now_buffer];
+            auto& next_states = sbuf[now_buffer ^ 1];
+            auto& next_size = buf_size[now_buffer ^ 1]; next_size = 0;
+
+            // 評価値のよいものから調べる
+
+            for (int n = 0; n < std::min(beam_width, buf_size[now_buffer]); n++) {
+                auto& now_state = now_states[ord[n]];
+                for (int d = 0; d < 4; d++) {
+                    if (!now_state.can_move(d)) continue;
+                    auto& next_state = next_states[next_size];
+                    next_state = now_state;
+                    next_state.move(d);
+                    if (!seen.contain(next_state.hash)) {
+                        seen.insert(next_state.hash);
+                        next_size++;
+                    }
+                }
             }
-            if (next_states.empty()) break;
-            sort(next_states.begin(), next_states.end(), [](StatePtr& a, StatePtr& b) { return a->cost < b->cost; });
-            now_states = next_states;
-            if (now_states.front()->cost < best_state->cost) {
-                best_state = now_states.front();
-                //cerr << best_state->cost << ": " << timer.elapsed_ms() << endl;
-                dump(turn, best_state->cost);
+
+            //dump(next_size);
+
+            if (!next_size) break;
+            std::iota(ord, ord + next_size, 0);
+            std::sort(ord, ord + next_size, [&next_states](int a, int b) {
+                return next_states[a].cost < next_states[b].cost;
+                });
+            
+            if (next_states[ord[0]].cost < best_state.cost) {
+                best_state = next_states[ord[0]];
+                dump(turn, best_state.cost);
             }
+
+            now_buffer ^= 1; // toggle buffer
             turn++;
         }
         dump(seen.size());
-        cerr << best_state->get_cmd() << endl;
+        //dump(buf_size[now_buffer], turn, g_T, timer.elapsed_ms(), duration, best_state.cost);
+        cerr << best_state.get_cmd() << endl;
         return best_state;
     }
 
@@ -1172,11 +1487,11 @@ int main(int argc, char** argv) {
     }
     dump(loop);
 
+    NBeam::setup(input);
     {
-        NBeam2::setup(input);
-        NBeam2::StatePtr bs2 = std::make_shared<NBeam2::State>(input, assign);
-        bs2 = NBeam2::beam_search(bs2, INT_MAX);
-        ans = bs2->get_cmd();
+        NBeam::State bs(input, assign);
+        bs = NBeam::beam_search(bs, 1e6);
+        ans = bs.get_cmd();
     }
 #endif
 
@@ -1184,8 +1499,10 @@ int main(int argc, char** argv) {
         ans = ans.substr(0, input.T);
     }
 
-    dump(ans.size(), double(ans.size()) / input.T);
+    dump(ans.size(), (2.0 - double(ans.size()) / input.T) * 500000);
     cout << ans << endl;
+
+    dump(timer.elapsed_ms());
 
     return 0;
 }
