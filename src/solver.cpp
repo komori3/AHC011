@@ -606,7 +606,7 @@ namespace NJudge {
     struct Sim {
         uint64_t n, T, turn, i, j;
         vector<vector<std::pair<uint64_t, uint64_t>>> from;
-        Sim(const Input& input) : n(input.N), T(input.T), from(input.N, vector(input.N, std::make_pair(0ULL, 0ULL))) {
+        Sim(const Input& input) : n(input.N), T(input.T), from(input.N, vector<std::pair<uint64_t, uint64_t>>(input.N, std::make_pair(0ULL, 0ULL))) {
             i = -1; j = -1;
             for (uint64_t x = 0; x < n; x++) {
                 for (uint64_t y = 0; y < n; y++) {
@@ -623,7 +623,7 @@ namespace NJudge {
             auto i2 = i + di[d];
             auto j2 = j + dj[d];
             if (i2 >= n || j2 >= n) {
-                cerr << format("illegal move: %c (turn %lld)\n", c, turn);
+                //cerr << format("illegal move: %c (turn %lld)\n", c, turn);
                 return false;
             }
             auto f1 = from[i][j];
@@ -683,7 +683,7 @@ namespace NJudge {
                 }
             }
             if (turn > T) {
-                cerr << format("too many moves\n");
+                //cerr << format("too many moves\n");
                 return 0;
             }
             if (max_tree == -1) {
@@ -1111,7 +1111,7 @@ namespace NBeam {
                     cost += cell_cost(sij);
                 }
             }
-            dump(cost);
+
         }
 
         inline int cell_cost(int ij) const {
@@ -1202,7 +1202,7 @@ namespace NBeam {
             
             if (next_states[ord[0]].cost < best_state.cost) {
                 best_state = next_states[ord[0]];
-                dump(turn, best_state.cost);
+                //dump(turn, best_state.cost);
             }
 
             now_buffer ^= 1; // toggle buffer
@@ -1210,7 +1210,6 @@ namespace NBeam {
         }
         dump(seen.size());
         //dump(buf_size[now_buffer], turn, g_T, timer.elapsed_ms(), duration, best_state.cost);
-        cerr << best_state.get_cmd() << endl;
         return best_state;
     }
 
@@ -1533,7 +1532,7 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs("tools/in/0003.txt");
+    std::ifstream ifs("tools/in/0000.txt");
     std::istream& cin = ifs;
 #endif
 
@@ -1543,38 +1542,7 @@ int main(int argc, char** argv) {
 
     auto input = parse_input(cin);
 
-    //TreeModifier tmod(input, generate_tree(input.N, rnd));
-
-#if 0
-    int min_cost = INT_MAX, loop = 0;
-    string ans;
-    while (timer.elapsed_ms() < 2900) {
-        TreeModifier tmod(input, generate_tree(input.N, rnd));
-        while (tmod.cost) {
-            tmod.local_search(rnd);
-        }
-        if (!tmod.cost) {
-            auto res = NFlow::calc_assign(input.tiles, tmod.tiles);
-            PuzzleSolver puz(input.N, res);
-            if (puz.is_solvable()) {
-                //dump("found!", loop);
-                puz.run();
-                if (chmin(min_cost, (int)puz.cmds.size())) {
-                    ans = puz.cmds;
-                    dump(min_cost);
-                }
-                {
-                    NBeam::StatePtr bs = std::make_shared<NBeam::State>(input, res);
-                    bs = NBeam::beam_search(bs, 90000);
-                    exit(1);
-                }
-                loop++;
-            }
-        }
-    }
-    dump(loop);
-#else
-    int min_cost = INT_MAX, loop = 0;
+    int min_cost = INT_MAX, best_score = INT_MIN, loop = 0;
     NFlow::Result assign;
     string ans;
     while (timer.elapsed_ms() < 900) {
@@ -1584,32 +1552,48 @@ int main(int argc, char** argv) {
             tmod.local_search(rnd);
         }
         auto res = NFlow::calc_assign(input.tiles, tmod.tiles);
-        if (res.total_cost < min_cost && PuzzleSolver(input.N, res).is_solvable()) {
-            assign = res;
-            min_cost = res.total_cost;
-            dump(min_cost);
+        PuzzleSolver puz(input.N, res);
+        if (puz.is_solvable()) {
+            // solve puzzle
+            {
+                puz.run();
+                int score = NJudge::compute_score(input, puz.cmds);
+                if (chmax(best_score, score)) {
+                    best_score = score;
+                    ans = puz.cmds;
+                    dump(best_score);
+                }
+            }
+            // for beam search
+            if (res.total_cost < min_cost) {
+                assign = res;
+                min_cost = res.total_cost;
+                dump(min_cost);
+            }
         }
+
     }
     dump(loop);
 
-    NBeam::setup(input);
     {
+        NBeam::setup(input);
+        double dur = 2900 - timer.elapsed_ms();
         NBeam::State bs(input, assign);
-        bs = NBeam::beam_search(bs, 1e6);
-        ans = bs.get_cmd();
+        bs = NBeam::beam_search(bs, dur);
+        int score = NJudge::compute_score(input, bs.get_cmd());
+        if (chmax(best_score, score)) {
+            best_score = score;
+            ans = bs.get_cmd();
+            dump(best_score);
+        }
     }
-#endif
 
     if (ans.size() > input.T) {
         ans = ans.substr(0, input.T);
     }
-
-    dump(ans.size(), (2.0 - double(ans.size()) / input.T) * 500000);
     cout << ans << endl;
 
-    dump(NJudge::compute_score(input, ans));
-
-    dump(timer.elapsed_ms());
+    dump(timer.elapsed_ms(), best_score);
 
     return 0;
 }
