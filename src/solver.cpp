@@ -648,6 +648,89 @@ namespace NFlow {
 }
 
 
+namespace NBeam2 {
+
+    // 1-indexed にして out of bound 判定を速くする
+    // 省メモリ
+    // 12 x 16
+
+    constexpr int dij[] = { -1, -16, 1, 16 }; // LURD
+
+    uint8_t g_N, g_T;
+    bool g_oob[192]; // out of bound
+    uint64_t g_hash_table[192][192];
+
+    inline int IJ(int i, int j) { return (i << 4) | j; }
+    inline int I(int ij) { return ij >> 4; }
+    inline int J(int ij) { return ij & 0xF; }
+
+    void setup(const Input& input) {
+
+        g_N = input.N;
+        g_T = input.T;
+
+        std::mt19937_64 engine;
+        for (int ij = 0; ij < 192; ij++) {
+            for (int n = 0; n < 192; n++) {
+                g_hash_table[ij][n] = engine();
+            }
+        }
+
+        Fill(g_oob, true);
+        for (int i = 1; i <= g_N; i++) {
+            for (int j = 1; j <= g_N; j++) {
+                g_oob[IJ(i, j)] = false;
+            }
+        }
+
+    }
+
+    struct State {
+
+        int16_t turn, cost;
+        uint8_t tiles[192];
+        uint8_t eij;
+        int8_t pdir;
+        uint8_t cmds[512]; // >= 2bit * 2000
+        uint64_t hash;
+
+        State(const Input& input, const NFlow::Result& assign) {
+
+            turn = cost = 0;
+            Fill(tiles, -1);
+            dump(tiles);
+            eij = -1;
+            pdir = -1;
+            Fill(cmds, 0);
+            hash = 0;
+
+            int tij_empty = IJ(input.N, input.N);
+            for (const auto& as : assign.type_to_assign) {
+                for (const auto& a : as) {
+                    int si = a.first.i + 1, sj = a.first.j + 1, sij = IJ(si, sj); // to 1-indexed
+                    int ti = a.second.i + 1, tj = a.second.j + 1, tij = IJ(ti, tj);
+                    tiles[sij] = tij;
+                    if (tij == tij_empty) {
+                        eij = sij;
+                        continue;
+                    }
+                    cost += cell_cost(sij);
+                }
+            }
+            dump(cost);
+        }
+
+        inline int cell_cost(int ij) const {
+            int tij = tiles[ij];
+            return abs(I(ij) - I(tij)) + abs(J(ij) - J(tij));
+        }
+
+    };
+
+}
+
+
+
 namespace NBeam {
 
     unsigned long long g_hash[10][10][100];
@@ -665,7 +748,7 @@ namespace NBeam {
             dump("hoge");
         }
     } hash_setup;
-
+    
     struct State;
     using StatePtr = std::shared_ptr<State>;
     struct State {
@@ -701,6 +784,8 @@ namespace NBeam {
                     hash ^= g_hash[i][j][tiles[i][j]];
                 }
             }
+
+            dump(cost);
         }
 
         inline pii get_pos(int n) const {
@@ -758,7 +843,7 @@ namespace NBeam {
         vector<StatePtr> now_states({ init_state });
         std::unordered_set<unsigned long long> seen; seen.reserve(10000000);
         seen.insert(init_state->hash);
-        int width = 10000, turn = 0;
+        int width = 30000, turn = 0;
         while (!now_states.empty() && turn < init_state->T && timer.elapsed_ms() < duration && best_state->cost) {
             vector<StatePtr> next_states; next_states.reserve(100000);
             for (int n = 0; n < std::min(width, (int)now_states.size()); n++) {
@@ -1100,7 +1185,7 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs("tools/in/0001.txt");
+    std::ifstream ifs("tools/in/0000.txt");
     std::istream& cin = ifs;
 #endif
 
@@ -1144,7 +1229,7 @@ int main(int argc, char** argv) {
     int min_cost = INT_MAX, loop = 0;
     NFlow::Result assign;
     string ans;
-    while (timer.elapsed_ms() < 2900) {
+    while (timer.elapsed_ms() < 900) {
         loop++;
         TreeModifier tmod(input, generate_tree(input.N, rnd));
         while (tmod.cost) {
@@ -1161,7 +1246,9 @@ int main(int argc, char** argv) {
 
     {
         NBeam::StatePtr bs = std::make_shared<NBeam::State>(input, assign);
-        bs = NBeam::beam_search(bs, 90000);
+        NBeam2::State s(input, assign);
+        exit(1);
+        bs = NBeam::beam_search(bs, INT_MAX);
     }
 #endif
 
