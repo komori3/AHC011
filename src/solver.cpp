@@ -602,6 +602,111 @@ Input generate_tree(int N, Xorshift& rnd) {
     return { N, T, tiles };
 }
 
+namespace NJudge {
+    struct Sim {
+        uint64_t n, T, turn, i, j;
+        vector<vector<std::pair<uint64_t, uint64_t>>> from;
+        Sim(const Input& input) : n(input.N), T(input.T), from(input.N, vector(input.N, std::make_pair(0ULL, 0ULL))) {
+            i = -1; j = -1;
+            for (uint64_t x = 0; x < n; x++) {
+                for (uint64_t y = 0; y < n; y++) {
+                    if (input.tiles[x][y] == 0) {
+                        i = x; j = y;
+                    }
+                    from[x][y] = { x, y };
+                }
+            }
+            turn = 0;
+        }
+        bool apply(char c) {
+            int d = c2d[c];
+            auto i2 = i + di[d];
+            auto j2 = j + dj[d];
+            if (i2 >= n || j2 >= n) {
+                cerr << format("illegal move: %c (turn %lld)\n", c, turn);
+                return false;
+            }
+            auto f1 = from[i][j];
+            auto f2 = from[i2][j2];
+            from[i2][j2] = f1;
+            from[i][j] = f2;
+            i = i2;
+            j = j2;
+            turn++;
+            return true;
+        }
+        int compute_score(const Input& input) {
+            UnionFind uf(n * n);
+            vector<bool> tree(n * n, true);
+            vector<vector<int>> tiles(n, vector<int>(n, 0));
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < n; j++) {
+                    tiles[i][j] = input.tiles[from[i][j].first][from[i][j].second];
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < n; j++) {
+                    if (i + 1 < n && (tiles[i][j] & 8) != 0 && (tiles[i + 1][j] & 2) != 0) {
+                        int a = uf.find(i * n + j);
+                        int b = uf.find((i + 1) * n + j);
+                        if (a == b) {
+                            tree[a] = false;
+                        }
+                        else {
+                            int t = tree[a] && tree[b];
+                            uf.unite(a, b);
+                            tree[uf.find(a)] = t;
+                        }
+                    }
+                    if (j + 1 < n && (tiles[i][j] & 4) != 0 && (tiles[i][j + 1] & 1) != 0) {
+                        int a = uf.find(i * n + j);
+                        int b = uf.find(i * n + (j + 1));
+                        if (a == b) {
+                            tree[a] = false;
+                        }
+                        else {
+                            int t = tree[a] && tree[b];
+                            uf.unite(a, b);
+                            tree[uf.find(a)] = t;
+                        }
+                    }
+                }
+            }
+            uint64_t max_tree = -1;
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < n; j++) {
+                    if (tiles[i][j] != 0 && tree[uf.find(i * n + j)]) {
+                        if (max_tree == -1 || uf.size(max_tree) < uf.size(i * n + j)) {
+                            max_tree = i * n + j;
+                        }
+                    }
+                }
+            }
+            if (turn > T) {
+                cerr << format("too many moves\n");
+                return 0;
+            }
+            if (max_tree == -1) {
+                return 0;
+            }
+            auto size = uf.size(max_tree);
+            if (size == n * n - 1) {
+                return (int)round(500000.0 * (1.0 + double(T - turn) / T));
+            }
+            return (int)round(500000.0 * size / (n * n - 1));
+        }
+    };
+    int compute_score(const Input& input, const string& out) {
+        Sim sim(input);
+        for (char c : out) {
+            if (!sim.apply(c)) {
+                return 0;
+            }
+        }
+        return sim.compute_score(input);
+    }
+}
+
 struct TreeModifier {
 
     using Edge = std::tuple<int, int, int, int>;
@@ -1428,7 +1533,7 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs("tools/in/0000.txt");
+    std::ifstream ifs("tools/in/0003.txt");
     std::istream& cin = ifs;
 #endif
 
@@ -1501,6 +1606,8 @@ int main(int argc, char** argv) {
 
     dump(ans.size(), (2.0 - double(ans.size()) / input.T) * 500000);
     cout << ans << endl;
+
+    dump(NJudge::compute_score(input, ans));
 
     dump(timer.elapsed_ms());
 
