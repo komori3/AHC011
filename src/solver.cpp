@@ -648,8 +648,144 @@ namespace NFlow {
 }
 
 
+namespace NBeam {
 
-struct NPuzzle {
+    unsigned long long g_hash[10][10][100];
+
+    struct HashSetup {
+        HashSetup() {
+            std::mt19937_64 engine;
+            for (int i = 0; i < 10; i++) {
+                for (int j = 0; j < 10; j++) {
+                    for (int n = 0; n < 100; n++) {
+                        g_hash[i][j][n] = engine();
+                    }
+                }
+            }
+            dump("hoge");
+        }
+    } hash_setup;
+
+    struct State;
+    using StatePtr = std::shared_ptr<State>;
+    struct State {
+
+        int N, T;
+        int turn;
+        int cost;
+        int tiles[10][10];
+        int ei, ej; // empty cell
+        int pdir; // prev dir
+        char cmds[2048];
+
+        unsigned long long hash;
+
+        State(const Input& input, const NFlow::Result& assign) : N(input.N), T(input.T), turn(0) {
+            Fill(tiles, 0);
+            cost = 0;
+            for (const auto& as : assign.type_to_assign) {
+                for (const auto& a : as) {
+                    tiles[a.first.i][a.first.j] = a.second.i * N + a.second.j;
+                    if (tiles[a.first.i][a.first.j] != N * N - 1) {
+                        cost += cell_cost(a.first.i, a.first.j);
+                    }
+                }
+            }
+            std::tie(ei, ej) = get_pos(N * N - 1);
+            pdir = -1;
+            Fill(cmds, '\0');
+
+            hash = 0;
+            for (int i = 0; i < N; i++) {
+                for (int j = 0; j < N; j++) {
+                    hash ^= g_hash[i][j][tiles[i][j]];
+                }
+            }
+        }
+
+        inline pii get_pos(int n) const {
+            for (int i = 0; i < N; i++) {
+                for (int j = 0; j < N; j++) {
+                    if (tiles[i][j] == n) {
+                        return { i, j };
+                    }
+                }
+            }
+            assert(false);
+            return { -1, -1 };
+        }
+
+        inline bool can_move(int dir) const {
+            if (((dir + 2) & 3) == pdir) return false; // 往復は考えなくてよい
+            int ni = ei + di[dir], nj = ej + dj[dir];
+            return 0 <= ni && ni < N && 0 <= nj && nj < N;
+        }
+
+        inline int cell_cost(int i, int j) const {
+            int t = tiles[i][j], ti = t / N, tj = t % N;
+            return abs(i - ti) + abs(j - tj);
+        }
+
+        inline void move(int dir) {
+            int ni = ei + di[dir], nj = ej + dj[dir];
+            cost -= cell_cost(ni, nj);
+            hash ^= g_hash[ei][ej][tiles[ei][ej]]; hash ^= g_hash[ni][nj][tiles[ni][nj]];
+            std::swap(tiles[ei][ej], tiles[ni][nj]);
+            hash ^= g_hash[ei][ej][tiles[ei][ej]]; hash ^= g_hash[ni][nj][tiles[ni][nj]];
+            cost += cell_cost(ei, ej);
+            ei = ni; ej = nj;
+            pdir = dir;
+            cmds[turn++] = d2c[dir];
+        }
+
+        void add_next_states(vector<StatePtr>& dst, std::unordered_set<unsigned long long>& seen) {
+            for (int d = 0; d < 4; d++) {
+                if (!can_move(d)) continue;
+                auto ns = std::make_shared<State>(*this);
+                ns->move(d);
+                if (!seen.count(ns->hash)) {
+                    dst.push_back(ns);
+                    seen.insert(ns->hash);
+                }
+            }
+        }
+
+    };
+
+    StatePtr beam_search(StatePtr init_state, double duration) {
+        Timer timer;
+        StatePtr best_state = init_state;
+        vector<StatePtr> now_states({ init_state });
+        std::unordered_set<unsigned long long> seen; seen.reserve(10000000);
+        seen.insert(init_state->hash);
+        int width = 10000, turn = 0;
+        while (!now_states.empty() && turn < init_state->T && timer.elapsed_ms() < duration && best_state->cost) {
+            vector<StatePtr> next_states; next_states.reserve(100000);
+            for (int n = 0; n < std::min(width, (int)now_states.size()); n++) {
+                now_states[n]->add_next_states(next_states, seen);
+            }
+            if (next_states.empty()) break;
+            sort(next_states.begin(), next_states.end(), [](StatePtr& a, StatePtr& b) { return a->cost < b->cost; });
+            now_states = next_states;
+            if (now_states.front()->cost < best_state->cost) {
+                best_state = now_states.front();
+                //cerr << best_state->cost << ": " << timer.elapsed_ms() << endl;
+                dump(turn, best_state->cost);
+            }
+            turn++;
+        }
+        dump(seen.size());
+        for (const auto& v : best_state->tiles) cerr << v << endl;
+        cerr << string(best_state->cmds) << endl;
+        return best_state;
+    }
+
+}
+
+
+
+
+struct PuzzleSolver {
 
     int N;
     int ei, ej;
@@ -671,7 +807,7 @@ struct NPuzzle {
     // LDRULDRRULLDR (8,12 が揃う)
     // ...
 
-    NPuzzle(int N, const NFlow::Result& assign) : N(N) {
+    PuzzleSolver(int N, const NFlow::Result& assign) : N(N) {
         tiles.resize(N, vector<int>(N));
         fixed.resize(N, vector<bool>(N));
         for (const auto& as : assign.type_to_assign) {
@@ -1077,7 +1213,7 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs("tools/in/0000.txt");
+    std::ifstream ifs("tools/in/0001.txt");
     std::istream& cin = ifs;
 #endif
 
@@ -1089,6 +1225,7 @@ int main(int argc, char** argv) {
 
     //TreeModifier tmod(input, generate_tree(input.N, rnd));
 
+#if 0
     int min_cost = INT_MAX, loop = 0;
     string ans;
     while (timer.elapsed_ms() < 2900) {
@@ -1098,7 +1235,7 @@ int main(int argc, char** argv) {
         }
         if (!tmod.cost) {
             auto res = NFlow::calc_assign(input.tiles, tmod.tiles);
-            NPuzzle puz(input.N, res);
+            PuzzleSolver puz(input.N, res);
             if (puz.is_solvable()) {
                 //dump("found!", loop);
                 puz.run();
@@ -1106,11 +1243,40 @@ int main(int argc, char** argv) {
                     ans = puz.cmds;
                     dump(min_cost);
                 }
+                {
+                    NBeam::StatePtr bs = std::make_shared<NBeam::State>(input, res);
+                    bs = NBeam::beam_search(bs, 90000);
+                    exit(1);
+                }
                 loop++;
             }
         }
     }
     dump(loop);
+#else
+    int min_cost = INT_MAX, loop = 0;
+    NFlow::Result assign;
+    string ans;
+    while (timer.elapsed_ms() < 2900) {
+        loop++;
+        TreeModifier tmod(input, generate_tree(input.N, rnd));
+        while (tmod.cost) {
+            tmod.local_search(rnd);
+        }
+        auto res = NFlow::calc_assign(input.tiles, tmod.tiles);
+        if (res.total_cost < min_cost && PuzzleSolver(input.N, res).is_solvable()) {
+            assign = res;
+            min_cost = res.total_cost;
+            dump(min_cost);
+        }
+    }
+    dump(loop);
+
+    {
+        NBeam::StatePtr bs = std::make_shared<NBeam::State>(input, assign);
+        bs = NBeam::beam_search(bs, 90000);
+    }
+#endif
 
     if (ans.size() > input.T) {
         ans = ans.substr(0, input.T);
