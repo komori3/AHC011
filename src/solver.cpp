@@ -452,25 +452,25 @@ struct TreeModifier {
             for (int t = 0; t < 16; t++) {
                 new_cost += abs(target_ctr[t] - tree_ctr[t]);
             }
+
+            int diff = new_cost - cost;
+            double temp = 0.3;
+            double prob = exp(-diff / temp);
+
+            if (rnd.next_double() < prob) {
+                disabled_edges.pop_back();
+                disabled_edges.emplace_back(i3, j3, i4, j4);
+                cost = new_cost;
+                return;
+            }
+
             if (chmin(min_cost, new_cost)) {
                 min_edge = e2;
             }
             toggle_edge(i3, j3, i4, j4);
         }
 
-        if (min_cost == INT_MAX) {
-            toggle_edge(i1, j1, i2, j2); // revert
-            return;
-        }
-
-        {
-            auto [i3, j3, i4, j4] = min_edge;
-            cost = min_cost;
-            toggle_edge(i3, j3, i4, j4);
-            disabled_edges.pop_back();
-            disabled_edges.emplace_back(i3, j3, i4, j4);
-        }
-        //dump(cost);
+        toggle_edge(i1, j1, i2, j2); // revert
     }
 
 };
@@ -1077,7 +1077,7 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs("tools/in/0004.txt");
+    std::ifstream ifs("tools/in/0000.txt");
     std::istream& cin = ifs;
 #endif
 
@@ -1100,6 +1100,7 @@ int main(int argc, char** argv) {
             auto res = NFlow::calc_assign(input.tiles, tmod.tiles);
             NPuzzle puz(input.N, res);
             if (puz.is_solvable()) {
+                //dump("found!", loop);
                 puz.run();
                 if (chmin(min_cost, (int)puz.cmds.size())) {
                     ans = puz.cmds;
@@ -1114,7 +1115,7 @@ int main(int argc, char** argv) {
     if (ans.size() > input.T) {
         ans = ans.substr(0, input.T);
     }
-    
+
     dump(ans.size(), double(ans.size()) / input.T);
     cout << ans << endl;
 
