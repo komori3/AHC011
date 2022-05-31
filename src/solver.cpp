@@ -99,8 +99,7 @@ namespace HashMapImpl {
             return it;
         }
     };
-    // The std::iterator class template (used as a base class to provide typedefs) is deprecated in C++17. (The <iterator> header is NOT deprecated.) The C++ Standard has never required user - defined iterators to derive from std::iterator.To fix this warning, stop deriving from std::iteratorand start providing publicly accessible typedefs named iterator_category, value_type, difference_type, pointer, and reference.Note that value_type is required to be non - const, even for constant iterators.You can define _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to acknowledge that you have received this warning.AHC011	C : \Users\komori3\OneDrive\dev\compro\heuristic\tasks\AHC011\src\solver.cpp	235
-
+ 
     template <typename Key, typename Data>
     struct HashMapBase {
         using u32 = uint32_t;
@@ -517,15 +516,20 @@ constexpr int LEFT = 1, UP = 2, RIGHT = 4, DOWN = 8;
 constexpr int di[] = { 0, -1, 0, 1 };
 constexpr int dj[] = { -1, 0, 1, 0 };
 
-
+constexpr int8_t d4[] = { -1, -16, 1, 16 }; // LURD
+inline uint8_t pack_p(uint8_t i, uint8_t j) { return (i << 4) | j; }
+inline uint16_t pack_e(uint8_t p1, uint8_t p2) { return (uint16_t(p1) << 8) | p2; }
+inline uint16_t pack_e(uint8_t i1, uint8_t j1, uint8_t i2, uint8_t j2) { return pack_e(pack_p(i1, j1), pack_p(i2, j2)); }
+inline uint8_t extract_i(uint8_t p) { return p >> 4; }
+inline uint8_t extract_j(uint8_t p) { return p & 0xF; }
+inline std::pair<uint8_t, uint8_t> unpack_p(uint8_t p) { return { extract_i(p), extract_j(p) }; }
+inline std::pair<uint8_t, uint8_t> unpack_e2p(uint16_t e) { return { e >> 8, e & 0xFF }; }
+inline std::tuple<uint8_t, uint8_t, uint8_t, uint8_t> unpack_e2ij(uint16_t ij2) { return { ij2 >> 12, ij2 >> 8 & 0xF, ij2 >> 4 & 0xF, ij2 & 0xF }; }
 
 struct UnionFind {
     vector<int> data;
-
     UnionFind() = default;
-
     explicit UnionFind(size_t sz) : data(sz, -1) {}
-
     bool unite(int x, int y) {
         x = find(x), y = find(y);
         if (x == y) return false;
@@ -534,79 +538,113 @@ struct UnionFind {
         data[y] = x;
         return true;
     }
-
     int find(int k) {
         if (data[k] < 0) return (k);
         return data[k] = find(data[k]);
     }
-
-    int size(int k) {
-        return -data[find(k)];
-    }
-
-    bool same(int x, int y) {
-        return find(x) == find(y);
-    }
+    int size(int k) { return -data[find(k)]; }
+    bool same(int x, int y) { return find(x) == find(y); }
 };
 
-struct Input {
+struct RawInput {
     int N, T;
     vector<vector<int>> tiles;
 };
 
-Input parse_input(std::istream& in) {
-    int N, T;
-    in >> N >> T;
-    vector<string> S(N);
-    in >> S;
-    vector<vector<int>> tiles(N, vector<int>(N));
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            tiles[i][j] = c2t[S[i][j]];
-        }
-    }
-    return { N, T, tiles };
-}
+using Board = uint8_t[192];
 
-// TODO: 空欄を右下に限定しない方法
-Input generate_tree(int N, Xorshift& rnd) {
-    int T = 2 * N * N * N;
-    vector<vector<int>> tiles(N, vector<int>(N));
-    vector<std::tuple<int, int, int, int>> edges;
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            if (i + 1 < N && !(i + 1 == N - 1 && j == N - 1)) {
-                edges.emplace_back(i, j, i + 1, j);
-            }
-            if (j + 1 < N && !(i == N - 1 && j + 1 == N - 1)) {
-                edges.emplace_back(i, j, i, j + 1);
-            }
-        }
-    }
-    shuffle_vector(edges, rnd);
-    UnionFind uf(N * N);
-    for (const auto [i1, j1, i2, j2] : edges) {
-        int u = i1 * N + j1, v = i2 * N + j2;
-        if (!uf.same(u, v)) {
-            uf.unite(u, v);
-            if (i1 + 1 == i2) {
-                tiles[i1][j1] |= DOWN;
-                tiles[i2][j2] |= UP;
-            }
-            else {
-                tiles[i1][j1] |= RIGHT;
-                tiles[i2][j2] |= LEFT;
+struct Input {
+
+    uint16_t N, T;
+    Board tiles;
+
+    Input() {}
+
+    Input(std::istream& in) {
+        std::fill(tiles, tiles + 192, UCHAR_MAX);
+        in >> N >> T;
+        vector<string> S(N);
+        in >> S;
+        for (uint8_t i = 1; i <= N; i++) {
+            for (uint8_t j = 1; j <= N; j++) {
+                tiles[pack_p(i, j)] = c2t[S[i - 1][j - 1]];
             }
         }
     }
-    return { N, T, tiles };
-}
+
+    Input(uint16_t N_, Xorshift& rnd, int nshuffle = 0) : N(N_), T(2 * N * N * N) {
+        std::fill(tiles, tiles + 192, UCHAR_MAX);
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                tiles[pack_p(i, j)] = 0;
+            }
+        }
+        vector<uint16_t> edges;
+        constexpr uint8_t offset = 1; // to 1-indexed
+        for (uint8_t i = 0; i < N; i++) {
+            for (uint8_t j = 0; j < N; j++) {
+                if (i + 1 < N && !(i + 1 == N - 1 && j == N - 1)) {
+                    edges.push_back(pack_e(i + offset, j + offset, i + 1 + offset, j + offset));
+                }
+                if (j + 1 < N && !(i == N - 1 && j + 1 == N - 1)) {
+                    edges.push_back(pack_e(i + offset, j + offset, i + offset, j + 1 + offset));
+                }
+            }
+        }
+        shuffle_vector(edges, rnd);
+        UnionFind uf(192);
+        for (const uint16_t edge : edges) {
+            auto [p1, p2] = unpack_e2p(edge);
+            if (!uf.same(p1, p2)) {
+                uf.unite(p1, p2);
+                if ((p1 >> 4) == (p2 >> 4)) { // same row
+                    tiles[p1] |= RIGHT;
+                    tiles[p2] |= LEFT;
+                }
+                else { // same col
+                    tiles[p1] |= DOWN;
+                    tiles[p2] |= UP;
+                }
+            }
+        }
+        if (nshuffle) {
+            // TODO
+        }
+    }
+
+    string stringify() const {
+        string res;
+        res += "N = " + std::to_string(N) + '\n';
+        res += "T = " + std::to_string(N) + '\n';
+        for (uint8_t i = 0; i < 12; i++) {
+            for (uint8_t j = 0; j < 16; j++) {
+                res += format("%3d ", (int)tiles[pack_p(i, j)]);
+            }
+            res += '\n';
+        }
+        return res;
+    }
+
+    RawInput cvt() const {
+        RawInput in;
+        in.N = N;
+        in.T = T;
+        in.tiles.resize(N, vector<int>(N));
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                in.tiles[i - 1][j - 1] = tiles[pack_p(i, j)];
+            }
+        }
+        return in;
+    }
+
+};
 
 namespace NJudge {
     struct Sim {
         uint64_t n, T, turn, i, j;
         vector<vector<std::pair<uint64_t, uint64_t>>> from;
-        Sim(const Input& input) : n(input.N), T(input.T), from(input.N, vector<std::pair<uint64_t, uint64_t>>(input.N, std::make_pair(0ULL, 0ULL))) {
+        Sim(const RawInput& input) : n(input.N), T(input.T), from(input.N, vector<std::pair<uint64_t, uint64_t>>(input.N, std::make_pair(0ULL, 0ULL))) {
             i = -1; j = -1;
             for (uint64_t x = 0; x < n; x++) {
                 for (uint64_t y = 0; y < n; y++) {
@@ -635,7 +673,7 @@ namespace NJudge {
             turn++;
             return true;
         }
-        int compute_score(const Input& input) {
+        int compute_score(const RawInput& input) {
             UnionFind uf(n * n);
             vector<bool> tree(n * n, true);
             vector<vector<int>> tiles(n, vector<int>(n, 0));
@@ -696,7 +734,7 @@ namespace NJudge {
             return (int)round(500000.0 * size / (n * n - 1));
         }
     };
-    int compute_score(const Input& input, const string& out) {
+    int compute_score(const RawInput& input, const string& out) {
         Sim sim(input);
         for (char c : out) {
             if (!sim.apply(c)) {
@@ -709,150 +747,134 @@ namespace NJudge {
 
 struct TreeModifier {
 
-    using Edge = std::tuple<int, int, int, int>;
+    using Edge = uint16_t;
 
-    int N;
-    vector<int> target_ctr; // target tile count
-    vector<int> tree_ctr; // tree tile count
-    vector<vector<int>> tiles;
-    vector<Edge> disabled_edges;
-    int cost;
+    uint16_t N;
+    uint8_t target_ctr[16];
+    uint8_t tree_ctr[16];
+    Board tiles;
+    vector<Edge> disabled;
+    uint16_t cost;
 
-    TreeModifier(const Input& input, const Input& tree) {
-        N = input.N;
-        target_ctr.assign(16, 0);
-        tree_ctr.assign(16, 0);
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                target_ctr[input.tiles[i][j]]++;
-                tree_ctr[tree.tiles[i][j]]++;
+    bool seen[192];
+    uint8_t prev[192];
+
+    TreeModifier(const Input& input, const Input& tree) : N(input.N) {
+        std::fill(target_ctr, target_ctr + 16, 0);
+        std::fill(tree_ctr, tree_ctr + 16, 0);
+        std::memcpy(tiles, tree.tiles, sizeof(uint8_t) * 192);
+        for (uint8_t i = 1; i <= N; i++) {
+            for (uint8_t j = 1; j <= N; j++) {
+                target_ctr[input.tiles[pack_p(i, j)]]++;
+                tree_ctr[tiles[pack_p(i, j)]]++;
             }
         }
-        tiles = tree.tiles;
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N - 1; j++) {
-                int t1 = tiles[i][j], t2 = tiles[i][j + 1];
-                if ((t1 & RIGHT) && (t2 & LEFT)) {
-                }
-                else if (!(i == N - 1 && j + 1 == N - 1)) {
-                    disabled_edges.emplace_back(i, j, i, j + 1);
+        for (uint8_t i = 1; i <= N; i++) {
+            for (uint8_t j = 1; j <= N - 1; j++) {
+                auto t1 = tiles[pack_p(i, j)], t2 = tiles[pack_p(i, j + 1)];
+                if (!((t1 & RIGHT) * (t2 & LEFT)) && !(i == N && j + 1 == N)) {
+                    disabled.push_back(pack_e(i, j, i, j + 1));
                 }
             }
         }
-        for (int i = 0; i < N - 1; i++) {
-            for (int j = 0; j < N; j++) {
-                int t1 = tiles[i][j], t2 = tiles[i + 1][j];
-                if ((t1 & DOWN) && (t2 & UP)) {
-                }
-                else if (!(i + 1 == N - 1 && j == N - 1)) {
-                    disabled_edges.emplace_back(i, j, i + 1, j);
+        for (uint8_t i = 1; i <= N - 1; i++) {
+            for (uint8_t j = 1; j <= N; j++) {
+                auto t1 = tiles[pack_p(i, j)], t2 = tiles[pack_p(i + 1, j)];
+                if (!((t1 & DOWN) * (t2 & UP)) && !(i + 1 == N && j == N)) {
+                    disabled.push_back(pack_e(i, j, i + 1, j));
                 }
             }
         }
         cost = 0;
-        for (int i = 0; i < 16; i++) {
-            cost += abs(target_ctr[i] - tree_ctr[i]);
+        for (uint8_t t = 0; t < 16; t++) {
+            cost += abs((int)target_ctr[t] - (int)tree_ctr[t]);
         }
-        //dump(cost);
     }
 
     Edge choose_random_disabled_edge(Xorshift& rnd) {
-        int eid = rnd.next_int(disabled_edges.size());
-        std::swap(disabled_edges[eid], disabled_edges.back()); // 末端に移動しておく
-        auto e = disabled_edges.back();
+        int eid = rnd.next_int(disabled.size());
+        std::swap(disabled[eid], disabled.back()); // 末端に移動しておく
+        auto e = disabled.back();
         return e;
     }
 
-    void toggle_edge(int i1, int j1, int i2, int j2) {
-        tree_ctr[tiles[i1][j1]]--;
-        tree_ctr[tiles[i2][j2]]--;
-        if (i1 == i2) {
-            tiles[i1][j1] ^= RIGHT;
-            tiles[i2][j2] ^= LEFT;
+    void toggle_edge(uint8_t p1, uint8_t p2) {
+        tree_ctr[tiles[p1]]--;
+        tree_ctr[tiles[p2]]--;
+        if (extract_i(p1) == extract_i(p2)) {
+            tiles[p1] ^= RIGHT;
+            tiles[p2] ^= LEFT;
         }
         else {
-            tiles[i1][j1] ^= DOWN;
-            tiles[i2][j2] ^= UP;
+            tiles[p1] ^= DOWN;
+            tiles[p2] ^= UP;
         }
-        tree_ctr[tiles[i1][j1]]++;
-        tree_ctr[tiles[i2][j2]]++;
+        tree_ctr[tiles[p1]]++;
+        tree_ctr[tiles[p2]]++;
     }
 
     void local_search(Xorshift& rnd) {
         // 接続していない辺を on にする
         // 出来たサイクルの辺を一つ選択して off にする
         auto e = choose_random_disabled_edge(rnd);
-        int i1 = std::get<0>(e), j1 = std::get<1>(e), i2 = std::get<2>(e), j2 = std::get<3>(e);
+        uint8_t p1, p2;
+        std::tie(p1, p2) = unpack_e2p(e);
         // (i1,j1) -> (i2,j2) のパスを求める
-        bool seen[10][10];
-        //pii prev[10][10];
-        int prev[10][10];
-        auto path = [&]() {
-            Fill(seen, false);
-            Fill(prev, -1);
+        auto cands = [&]() {
+            std::fill(seen, seen + 192, false);
+            std::fill(prev, prev + 192, UCHAR_MAX);
             fqu.reset();
-            fqu.push((i1 << 4) | j1);
-            seen[i1][j1] = true;
+            fqu.push(p1);
+            seen[p1] = true;
             bool found = false;
             while (!fqu.empty()) {
-                int ij = fqu.pop(), i = ij >> 4, j = ij & 0xF;
-                int t = tiles[i][j];
+                uint8_t p = fqu.pop(), i = extract_i(p), j = extract_j(p);
+                auto t = tiles[p];
                 for (int d = 0; d < 4; d++) {
                     if (!(t >> d & 1)) continue; // d 方向に伸びていない
-                    int ni = i + di[d], nj = j + dj[d];
-                    if (seen[ni][nj]) continue;
-                    seen[ni][nj] = true;
-                    fqu.push((ni << 4) | nj);
-                    prev[ni][nj] = (i << 4) | j;
-                    if (ni == i2 && nj == j2) {
+                    uint8_t np = p + d4[d];
+                    if (seen[np]) continue;
+                    seen[np] = true;
+                    fqu.push(np);
+                    prev[np] = p;
+                    if (p2 == np) {
                         found = true;
                         break;
                     }
                 }
                 if (found) break;
             }
-            int p = (i2 << 4) | j2;
-            vector<pii> path; path.reserve(128);
-            path.emplace_back(p >> 4, p & 0xF);
-            while (p != -1) {
-                p = prev[p >> 4][p & 0xF];
-                if (p == -1) break;
-                path.emplace_back(p >> 4, p & 0xF);
+            auto p = p2;
+            vector<Edge> edges; edges.reserve(128);
+            while (true) {
+                auto np = prev[p];
+                if (np == UCHAR_MAX) break;
+                edges.push_back(pack_e(std::min(p, np), std::max(p, np)));
+                p = np;
             }
-            return path;
+            return edges;
         }();
 
-        vector<Edge> cands; cands.reserve(path.size());
-        for (int n = 0; n + 1 < path.size(); n++) {
-            auto [i3, j3] = path[n];
-            auto [i4, j4] = path[n + 1];
-            if ((i3 == i4 && j3 > j4) || (j3 == j4 && i3 > i4)) {
-                std::swap(i3, i4);
-                std::swap(j3, j4);
-            }
-            cands.emplace_back(i3, j3, i4, j4);
-        }
-
-        int min_cost = INT_MAX;
+        uint16_t min_cost = std::numeric_limits<uint16_t>::max();
         Edge min_edge;
         // connect (i1,j1)-(i2,j2)
-        toggle_edge(i1, j1, i2, j2);
+        toggle_edge(p1, p2);
         for (auto e2 : cands) {
-            auto [i3, j3, i4, j4] = e2;
+            auto [p3, p4] = unpack_e2p(e2);
             // disconnect (i3,j3)-(i4,j4)
-            toggle_edge(i3, j3, i4, j4);
-            int new_cost = 0;
+            toggle_edge(p3, p4);
+            uint16_t new_cost = 0;
             for (int t = 0; t < 16; t++) {
-                new_cost += abs(target_ctr[t] - tree_ctr[t]);
+                new_cost += abs((int)target_ctr[t] - (int)tree_ctr[t]);
             }
 
-            int diff = new_cost - cost;
+            auto diff = (int)new_cost - (int)cost;
             double temp = 0.3;
             double prob = exp(-diff / temp);
 
             if (rnd.next_double() < prob) {
-                disabled_edges.pop_back();
-                disabled_edges.emplace_back(i3, j3, i4, j4);
+                disabled.pop_back();
+                disabled.emplace_back(pack_e(p3, p4));
                 cost = new_cost;
                 return;
             }
@@ -860,10 +882,23 @@ struct TreeModifier {
             if (chmin(min_cost, new_cost)) {
                 min_edge = e2;
             }
-            toggle_edge(i3, j3, i4, j4);
+            toggle_edge(p3, p4);
         }
 
-        toggle_edge(i1, j1, i2, j2); // revert
+        toggle_edge(p1, p2); // revert
+    }
+
+    RawInput cvt() const {
+        RawInput in;
+        in.N = N;
+        in.T = (int)2 * N * N * N;
+        in.tiles.resize(N, vector<int>(N));
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                in.tiles[i - 1][j - 1] = tiles[pack_p(i, j)];
+            }
+        }
+        return in;
     }
 
 };
@@ -950,15 +985,9 @@ namespace NFlow {
     };
 
     struct Node {
-        int id, i, j;
-        Node(int id = -1, int i = -1, int j = -1) : id(id), i(i), j(j) {}
-        std::string str() const {
-            return format("Node [id=%d, p=(%d, %d)]", id, i, j);
-        }
-        friend std::ostream& operator<<(std::ostream& o, const Node& obj) {
-            o << obj.str();
-            return o;
-        }
+        int id;
+        uint8_t p;
+        Node(int id = -1, uint8_t p = UCHAR_MAX) : id(id), p(p) {}
     };
 
     using Assign = std::pair<Node, Node>;
@@ -985,22 +1014,24 @@ namespace NFlow {
         return assign;
     }
 
-    Result calc_assign(const vector<vector<int>>& src, const vector<vector<int>>& dst) {
+    Result calc_assign(const Input& input, const TreeModifier& tmod) {
         Result result;
         result.type_to_assign.resize(16);
         // create nodes
-        int N = src.size();
+        int N = input.N;
         vector<vector<Node>> S(16), T(16);
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                int sc = src[i][j];
-                S[sc].emplace_back(S[sc].size() + 1, i, j);
+        for (uint8_t i = 1; i <= N; i++) {
+            for (uint8_t j = 1; j <= N; j++) {
+                auto p = pack_p(i, j);
+                auto sc = input.tiles[p];
+                S[sc].emplace_back(S[sc].size() + 1, p);
             }
         }
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                int tc = dst[i][j];
-                T[tc].emplace_back(S[tc].size() + T[tc].size() + 1, i, j);
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                auto p = pack_p(i, j);
+                auto tc = tmod.tiles[p];
+                T[tc].emplace_back(S[tc].size() + T[tc].size() + 1, p);
             }
         }
         // mincostflow
@@ -1017,7 +1048,7 @@ namespace NFlow {
             // u in 1..s から v in s+1...s+t に容量 inf, コスト dist(u, v) の辺を張る
             for (const auto& u : S[t]) {
                 for (const auto& v : T[t]) {
-                    int dist = abs(u.i - v.i) + abs(u.j - v.j);
+                    int dist = abs((int)extract_i(u.p) - (int)extract_i(v.p)) + abs((int)extract_j(u.p) - (int)extract_j(v.p));
                     pd.add_edge(u.id, v.id, pd.INF, dist);
                 }
             }
@@ -1045,27 +1076,21 @@ namespace NBeam {
     // 省メモリ
     // 12 x 16
 
-    constexpr int dij[] = { -1, -16, 1, 16 }; // LURD
-
     int g_N, g_T;
     uint64_t g_hash_table[192][192];
-
-    inline int IJ(int i, int j) { return (i << 4) | j; }
-    inline int I(int ij) { return ij >> 4; }
-    inline int J(int ij) { return ij & 0xF; }
 
     void setup(int N, int T) {
         g_N = N;
         g_T = T;
         std::mt19937_64 engine;
-        for (int ij = 0; ij < 192; ij++) {
+        for (int p = 0; p < 192; p++) {
             for (int n = 0; n < 192; n++) {
-                g_hash_table[ij][n] = engine();
+                g_hash_table[p][n] = engine();
             }
         }
     }
 
-    void setup(const Input& input) {
+    void setup(const RawInput& input) {
         setup(input.N, input.T);
         g_N = input.N;
         g_T = input.T;
@@ -1077,50 +1102,29 @@ namespace NBeam {
 
         int16_t turn, cost;
         uint8_t tiles[192];
-        uint8_t eij;
+        uint8_t ep;
         int8_t pdir;
         uint8_t cmds[512]; // >= 2bit * 2000
         uint64_t hash;
 
         State() : cost(SHRT_MAX) {}
 
-        State(const Input& input, const NFlow::Result& assign) {
-
-            setup(input.N, input.T);
-            initialize();
-
-            int tij_empty = IJ(input.N, input.N);
-            for (const auto& as : assign.type_to_assign) {
-                for (const auto& a : as) {
-                    int si = a.first.i + 1, sj = a.first.j + 1, sij = IJ(si, sj); // to 1-indexed
-                    int ti = a.second.i + 1, tj = a.second.j + 1, tij = IJ(ti, tj);
-                    tiles[sij] = tij;
-                    if (tij == tij_empty) {
-                        eij = sij;
-                        continue;
-                    }
-                    cost += cell_cost(sij);
-                }
-            }
-
-        }
-
         State(int N, int T, const vector<std::tuple<int, int, int, int>>& assign) {
 
             setup(N, T);
             initialize();
 
-            int tij_empty = IJ(N, N);
+            int tp_empty = pack_p(N, N);
             for (auto [si, sj, ti, tj] : assign) {
                 si++; sj++; ti++; tj++;
-                int sij = IJ(si, sj);
-                int tij = IJ(ti, tj);
-                tiles[sij] = tij;
-                if (tij == tij_empty) {
-                    eij = sij;
+                int sp = pack_p(si, sj);
+                int tp = pack_p(ti, tj);
+                tiles[sp] = tp;
+                if (tp == tp_empty) {
+                    ep = sp;
                     continue;
                 }
-                cost += cell_cost(sij);
+                cost += cell_cost(sp);
             }
 
         }
@@ -1128,29 +1132,29 @@ namespace NBeam {
         void initialize() {
             turn = cost = 0;
             std::fill(tiles, tiles + 192, UCHAR_MAX);
-            eij = -1;
+            ep = -1;
             pdir = -1;
             std::fill(cmds, cmds + 512, 0);
             hash = 0;
         }
 
-        inline int cell_cost(int ij) const {
-            int tij = tiles[ij];
-            return abs(I(ij) - I(tij)) + abs(J(ij) - J(tij));
+        inline int cell_cost(int p) const {
+            int tp = tiles[p];
+            return abs(extract_i(p) - extract_i(tp)) + abs(extract_j(p) - extract_j(tp));
         }
 
         inline bool can_move(int dir) const {
-            return !(((dir + 2) & 3) == pdir || tiles[eij + dij[dir]] == UCHAR_MAX);
+            return !(((dir + 2) & 3) == pdir || tiles[ep + d4[dir]] == UCHAR_MAX);
         }
 
         inline void move(int dir) {
-            int nij = eij + dij[dir];
-            cost -= cell_cost(nij);
-            hash ^= g_hash_table[eij][tiles[eij]]; hash ^= g_hash_table[nij][tiles[nij]];
-            std::swap(tiles[eij], tiles[nij]);
-            hash ^= g_hash_table[eij][tiles[eij]]; hash ^= g_hash_table[nij][tiles[nij]];
-            cost += cell_cost(eij);
-            eij = nij;
+            int np = ep + d4[dir];
+            cost -= cell_cost(np);
+            hash ^= g_hash_table[ep][tiles[ep]]; hash ^= g_hash_table[np][tiles[np]];
+            std::swap(tiles[ep], tiles[np]);
+            hash ^= g_hash_table[ep][tiles[ep]]; hash ^= g_hash_table[np][tiles[np]];
+            cost += cell_cost(ep);
+            ep = np;
             pdir = dir;
             // 1 byte に 4 個
             cmds[turn >> 2] ^= dir << ((turn & 3) << 1);
@@ -1185,7 +1189,6 @@ namespace NBeam {
 
         State best_state(init_state);
         HashSet<unsigned long long> seen; seen.reserve(30000000);
-        //std::unordered_set<unsigned long long> seen; seen.reserve(30000000);
         seen.insert(init_state.hash);
 
         int turn = 0;
@@ -1195,8 +1198,6 @@ namespace NBeam {
             auto& now_size = sbuf[now_buffer];
             auto& next_states = sbuf[now_buffer ^ 1];
             auto& next_size = buf_size[now_buffer ^ 1]; next_size = 0;
-
-            // 評価値のよいものから調べる
 
             for (int n = 0; n < std::min(beam_width, buf_size[now_buffer]); n++) {
                 auto& now_state = now_states[ord[n]];
@@ -1211,8 +1212,6 @@ namespace NBeam {
                     }
                 }
             }
-
-            //dump(next_size);
 
             if (!next_size) break;
             std::iota(ord, ord + next_size, 0);
@@ -1229,7 +1228,6 @@ namespace NBeam {
             turn++;
         }
         dump(seen.size());
-        //dump(buf_size[now_buffer], turn, g_T, timer.elapsed_ms(), duration, best_state.cost);
         return best_state;
     }
 
@@ -1264,7 +1262,7 @@ struct PuzzleSolver {
         fixed.resize(N, vector<bool>(N));
         for (const auto& as : assign.type_to_assign) {
             for (const auto& a : as) {
-                tiles[a.first.i][a.first.j] = a.second.i * N + a.second.j;
+                tiles[extract_i(a.first.p) - 1][extract_j(a.first.p) - 1] = (extract_i(a.second.p) - 1) * N + (extract_j(a.second.p) - 1);
             }
         }
         std::tie(ei, ej) = get_pos(N * N - 1);
@@ -1541,6 +1539,66 @@ struct PuzzleSolver {
 };
 
 
+// TODO
+//struct PuzzleSolver2 {
+//
+//    uint16_t N;
+//    uint8_t ep;
+//    uint8_t tiles[192];
+//    bool fixed[192];
+//    string cmds;
+//
+//    PuzzleSolver2(uint16_t N, const NFlow::Result2& assign) : N(N) {
+//        std::fill(tiles, tiles + 192, UCHAR_MAX);
+//        std::fill(fixed, fixed + 192, false);
+//        for (const auto& as : assign.type_to_assign) {
+//            for (const auto& a : as) {
+//                tiles[a.first.p] = a.second.p;
+//            }
+//        }
+//        uint8_t en = pack_p(N, N);
+//        ep = (uint8_t)std::distance(tiles, std::find(tiles, tiles + 192, en));
+//    }
+//
+//    bool is_solvable() const {
+//        int inv = 0;
+//        for (int i = 0; i < N * N - 1; i++) {
+//            for (int j = 0; j < N * N - 1; j++) {
+//                inv += tiles[pack_p(i / N + 1, i % N + 1)] > tiles[pack_p(j / N + 1, j % N + 1)];
+//            }
+//        }
+//        int dist = abs((int)extract_i(ep) - N) + abs((int)extract_j(ep) - N);
+//        return inv % 2 == dist % 2;
+//    }
+//
+//    void align(int layer) {
+//        vector<std::pair<int, bool>> pib; // (target num, 特殊処理?)
+//        pib.emplace_back(pack_p())
+//    }
+//
+//#ifdef HAVE_OPENCV_HIGHGUI
+//    void show(int delay = 0) {
+//        int sz = 800 / N, H = sz * N, W = sz * N;
+//        cv::Mat_<cv::Vec3b> img(H, W, cv::Vec3b(255, 255, 255));
+//        for (int i = 0; i <= N; i++) {
+//            cv::line(img, cv::Point(0, i * sz), cv::Point(W, i * sz), cv::Scalar(200, 200, 200), 2);
+//            cv::line(img, cv::Point(i * sz, 0), cv::Point(i * sz, H), cv::Scalar(200, 200, 200), 2);
+//        }
+//        for (int i = 0; i < N; i++) {
+//            for (int j = 0; j < N; j++) {
+//                int n = tiles[pack_p(i + 1, j + 1)];
+//                if (n == pack_p(N, N)) continue;
+//                int r = extract_i(n) - 1, c = extract_j(n) - 1, rc = r * N + c;
+//                cv::Point ctr(j * sz + sz / 3, i * sz + sz / 2);
+//                cv::putText(img, std::to_string(rc), ctr, cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 0), 2);
+//            }
+//        }
+//        cv::imshow("img", img);
+//        cv::waitKey(delay);
+//    }
+//#endif
+//
+//};
 
 #ifdef HAVE_OPENCV_HIGHGUI
 void show(const vector<vector<int>>& tiles, int delay = 0) {
@@ -1574,7 +1632,7 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs("tools/in/0004.txt");
+    std::ifstream ifs("tools/in/0002.txt");
     std::istream& cin = ifs;
 #endif
 
@@ -1582,24 +1640,24 @@ int main(int argc, char** argv) {
     for (char c = '0'; c <= '9'; c++) c2t[c] = c - '0';
     for (char c = 'a'; c <= 'f'; c++) c2t[c] = c - 'a' + 10;
 
-    auto input = parse_input(cin);
+    Input input(cin);
 
     int min_cost = INT_MAX, best_score = INT_MIN, loop = 0;
     NFlow::Result assign;
     string ans;
     while (timer.elapsed_ms() < 900) {
         loop++;
-        TreeModifier tmod(input, generate_tree(input.N, rnd));
+        TreeModifier tmod(input, Input(input.N, rnd));
         while (tmod.cost) {
             tmod.local_search(rnd);
         }
-        auto res = NFlow::calc_assign(input.tiles, tmod.tiles);
+        auto res = NFlow::calc_assign(input, tmod);
         PuzzleSolver puz(input.N, res);
         if (puz.is_solvable()) {
             // solve puzzle
             {
                 puz.run();
-                int score = NJudge::compute_score(input, puz.cmds);
+                int score = NJudge::compute_score(input.cvt(), puz.cmds);
                 if (chmax(best_score, score)) {
                     best_score = score;
                     ans = puz.cmds;
@@ -1619,7 +1677,7 @@ int main(int argc, char** argv) {
     {
         PuzzleSolver puz(input.N, assign);
         puz.run_with_beam_search(7, 2900 - timer.elapsed_ms());
-        int score = NJudge::compute_score(input, puz.cmds);
+        int score = NJudge::compute_score(input.cvt(), puz.cmds);
         if (best_score < score) {
             best_score = score;
             ans = puz.cmds;
