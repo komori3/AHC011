@@ -1048,32 +1048,27 @@ namespace NBeam {
     constexpr int dij[] = { -1, -16, 1, 16 }; // LURD
 
     int g_N, g_T;
-    bool g_oob[192]; // out of bound
     uint64_t g_hash_table[192][192];
 
     inline int IJ(int i, int j) { return (i << 4) | j; }
     inline int I(int ij) { return ij >> 4; }
     inline int J(int ij) { return ij & 0xF; }
 
-    void setup(const Input& input) {
-
-        g_N = input.N;
-        g_T = input.T;
-
+    void setup(int N, int T) {
+        g_N = N;
+        g_T = T;
         std::mt19937_64 engine;
         for (int ij = 0; ij < 192; ij++) {
             for (int n = 0; n < 192; n++) {
                 g_hash_table[ij][n] = engine();
             }
         }
+    }
 
-        Fill(g_oob, true);
-        for (int i = 1; i <= g_N; i++) {
-            for (int j = 1; j <= g_N; j++) {
-                g_oob[IJ(i, j)] = false;
-            }
-        }
-
+    void setup(const Input& input) {
+        setup(input.N, input.T);
+        g_N = input.N;
+        g_T = input.T;
     }
 
     struct State;
@@ -1091,12 +1086,8 @@ namespace NBeam {
 
         State(const Input& input, const NFlow::Result& assign) {
 
-            turn = cost = 0;
-            Fill(tiles, -1);
-            eij = -1;
-            pdir = -1;
-            Fill(cmds, 0);
-            hash = 0;
+            setup(input.N, input.T);
+            initialize();
 
             int tij_empty = IJ(input.N, input.N);
             for (const auto& as : assign.type_to_assign) {
@@ -1114,13 +1105,42 @@ namespace NBeam {
 
         }
 
+        State(int N, int T, const vector<std::tuple<int, int, int, int>>& assign) {
+
+            setup(N, T);
+            initialize();
+
+            int tij_empty = IJ(N, N);
+            for (auto [si, sj, ti, tj] : assign) {
+                si++; sj++; ti++; tj++;
+                int sij = IJ(si, sj);
+                int tij = IJ(ti, tj);
+                tiles[sij] = tij;
+                if (tij == tij_empty) {
+                    eij = sij;
+                    continue;
+                }
+                cost += cell_cost(sij);
+            }
+
+        }
+
+        void initialize() {
+            turn = cost = 0;
+            std::fill(tiles, tiles + 192, UCHAR_MAX);
+            eij = -1;
+            pdir = -1;
+            std::fill(cmds, cmds + 512, 0);
+            hash = 0;
+        }
+
         inline int cell_cost(int ij) const {
             int tij = tiles[ij];
             return abs(I(ij) - I(tij)) + abs(J(ij) - J(tij));
         }
 
         inline bool can_move(int dir) const {
-            return !(((dir + 2) & 3) == pdir || g_oob[eij + dij[dir]]);
+            return !(((dir + 2) & 3) == pdir || tiles[eij + dij[dir]] == UCHAR_MAX);
         }
 
         inline void move(int dir) {
@@ -1268,6 +1288,28 @@ struct PuzzleSolver {
         }
         move_number(IJ(N - 2, N - 2), N - 2, N - 2);
         move_empty_cell(N - 1, N - 1);
+    }
+
+    void run_with_beam_search(int level, double duration) {
+        // level*level 以下の正方形になったら beam search を走らせる
+        int align_layer_size = std::max(0, N - level);
+        for (int layer = 0; layer < align_layer_size; layer++) {
+            align(layer);
+        }
+
+        int offset = -align_layer_size;
+        vector<std::tuple<int, int, int, int>> assign;
+        for (int i = align_layer_size; i < N; i++) {
+            for (int j = align_layer_size; j < N; j++) {
+                int ti = tiles[i][j] / N, tj = tiles[i][j] % N;
+                assign.emplace_back(i + offset, j + offset, ti + offset, tj + offset);
+            }
+        }
+
+        NBeam::State bs(N - align_layer_size, 2 * N * N * N - cmds.size(), assign);
+        bs = NBeam::beam_search(bs, duration);
+
+        cmds += bs.get_cmd();
     }
 
     inline pii get_pos(int n) const {
@@ -1532,7 +1574,7 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs("tools/in/0000.txt");
+    std::ifstream ifs("tools/in/0004.txt");
     std::istream& cin = ifs;
 #endif
 
@@ -1571,19 +1613,16 @@ int main(int argc, char** argv) {
                 dump(min_cost);
             }
         }
-
     }
     dump(loop);
 
     {
-        NBeam::setup(input);
-        double dur = 2900 - timer.elapsed_ms();
-        NBeam::State bs(input, assign);
-        bs = NBeam::beam_search(bs, dur);
-        int score = NJudge::compute_score(input, bs.get_cmd());
-        if (chmax(best_score, score)) {
+        PuzzleSolver puz(input.N, assign);
+        puz.run_with_beam_search(7, 2900 - timer.elapsed_ms());
+        int score = NJudge::compute_score(input, puz.cmds);
+        if (best_score < score) {
             best_score = score;
-            ans = bs.get_cmd();
+            ans = puz.cmds;
             dump(best_score);
         }
     }
