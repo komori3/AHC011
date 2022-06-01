@@ -1072,6 +1072,8 @@ namespace NFlow {
 
 namespace NBeam {
 
+    constexpr int max_beam_turn = 512;
+
     // 1-indexed にして out of bound 判定を速くする
     // 省メモリ
     // 12 x 16
@@ -1104,7 +1106,7 @@ namespace NBeam {
         uint8_t tiles[192];
         uint8_t ep;
         int8_t pdir;
-        uint8_t cmds[512]; // >= 2bit * 2000
+        uint8_t cmds[max_beam_turn >> 2]; // >= 2bit * 2000
         uint64_t hash;
 
         State() : cost(SHRT_MAX) {}
@@ -1134,7 +1136,7 @@ namespace NBeam {
             std::fill(tiles, tiles + 192, UCHAR_MAX);
             ep = -1;
             pdir = -1;
-            std::fill(cmds, cmds + 512, 0);
+            std::fill(cmds, cmds + (max_beam_turn >> 2), 0);
             hash = 0;
         }
 
@@ -1461,7 +1463,7 @@ namespace NPuzzle {
             // S->ed と S->td が 90° の角をなしており、角の間が fix されているとき
             //   7 手で S を移動させる方法が 1 通り
 
-            int width = 30;
+            int width = 100;
             vector<State> now_states(init_states);
             for (int turn = 0; turn < min_dist; turn++) {
                 vector<State> next_states;
@@ -1693,11 +1695,32 @@ namespace NPuzzle {
         }
 
         void align(int layer) {
-            //dump(layer, md, cmds.size());
+
             move_number(layer * N + layer, layer, layer);
             fixed[layer][layer] = true;
-            align_horizontal(layer);
-            align_vertical(layer);
+
+            int best_turn = INT_MAX;
+            State best_state;
+
+            // h->v vs. v->h
+            {
+                State s(*this);
+                s.align_horizontal(layer);
+                s.align_vertical(layer);
+                if (chmin(best_turn, (int)s.cmds.size())) {
+                    best_state = s;
+                }
+            }
+            {
+                State s(*this);
+                s.align_vertical(layer);
+                s.align_horizontal(layer);
+                if (chmin(best_turn, (int)s.cmds.size())) {
+                    best_state = s;
+                }
+            }
+            
+            *this = best_state;
         }
 
         std::pair<bool, int> can_move(int d) const {
@@ -1780,6 +1803,28 @@ namespace NPuzzle {
             }
             move_number(IJ(N - 2, N - 2), N - 2, N - 2);
             move_empty_cell(N - 1, N - 1);
+        }
+
+        void run_with_beam_search(int level, double duration) {
+            // level*level 以下の正方形になったら beam search を走らせる
+            int align_layer_size = std::max(0, N - level);
+            for (int layer = 0; layer < align_layer_size; layer++) {
+                align(layer);
+            }
+
+            int offset = -align_layer_size;
+            vector<std::tuple<int, int, int, int>> assign;
+            for (int i = align_layer_size; i < N; i++) {
+                for (int j = align_layer_size; j < N; j++) {
+                    int ti = tiles[i][j] / N, tj = tiles[i][j] % N;
+                    assign.emplace_back(i + offset, j + offset, ti + offset, tj + offset);
+                }
+            }
+
+            NBeam::State bs(N - align_layer_size, NBeam::max_beam_turn, assign);
+            bs = NBeam::beam_search(bs, duration);
+
+            cmds += bs.get_cmd();
         }
 
         static State create(int N, int seed, int nshuffle) {
@@ -2160,7 +2205,7 @@ int main(int argc, char** argv) {
     int min_cost = INT_MAX, best_score = INT_MIN, loop = 0;
     NFlow::Result assign;
     string ans;
-    while (timer.elapsed_ms() < 2900) {
+    while (timer.elapsed_ms() < 900) {
         loop++;
         TreeModifier tmod(input, Input(input.N, rnd));
         while (tmod.cost) {
@@ -2170,8 +2215,8 @@ int main(int argc, char** argv) {
         NPuzzle::State puz(input.N, res);
         //PuzzleSolver puz(input.N, res);
         if (puz.is_solvable()) {
-            // solve puzzle
-            if (true) {
+            // solve puzzle: TODO 回数多いほどよさそう　要高速化
+            if (false) {
                 puz.run();
                 int score = NJudge::compute_score(input.cvt(), puz.cmds);
                 if (chmax(best_score, score)) {
@@ -2190,7 +2235,7 @@ int main(int argc, char** argv) {
     }
     dump(loop);
 
-    if (false) {
+    if (true) {
         NPuzzle::State puz(input.N, assign);
         puz.run();
         int score = NJudge::compute_score(input.cvt(), puz.cmds);
@@ -2225,8 +2270,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    if(false) { // hybrid
-        PuzzleSolver puz(input.N, assign);
+    if(true) { // hybrid
+        NPuzzle::State puz(input.N, assign);
         puz.run_with_beam_search(7, 2900 - timer.elapsed_ms());
         int score = NJudge::compute_score(input.cvt(), puz.cmds);
         if (best_score < score) {
