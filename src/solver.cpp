@@ -1102,14 +1102,15 @@ namespace NBeam {
     using StatePtr = std::shared_ptr<State>;
     struct State {
 
-        int16_t turn, cost;
+        int16_t turn;
+        int16_t md, cost;
         uint8_t tiles[192];
         uint8_t ep;
         int8_t pdir;
         uint8_t cmds[max_beam_turn >> 2]; // >= 2bit * 2000
         uint64_t hash;
 
-        State() : cost(SHRT_MAX) {}
+        State() : md(SHRT_MAX) {}
 
         State(int N, int T, const vector<std::tuple<int, int, int, int>>& assign) {
 
@@ -1126,13 +1127,18 @@ namespace NBeam {
                     ep = sp;
                     continue;
                 }
-                cost += cell_cost(sp);
+                md += cell_cost(sp);
             }
 
         }
 
+        void print() const {
+            cerr << format("turn=%d, md=%d, cost=%d, ep=%d, pdir=%d, hash=%lld\n", turn, md, cost, ep, pdir, hash);
+        }
+
         void initialize() {
-            turn = cost = 0;
+            turn = md = 0;
+            cost = SHRT_MAX;
             std::fill(tiles, tiles + 192, UCHAR_MAX);
             ep = -1;
             pdir = -1;
@@ -1151,16 +1157,46 @@ namespace NBeam {
 
         inline void move(int dir) {
             int np = ep + d4[dir];
-            cost -= cell_cost(np);
-            hash ^= g_hash_table[ep][tiles[ep]]; hash ^= g_hash_table[np][tiles[np]];
+            md -= cell_cost(np);
+            hash ^= g_hash_table[np][tiles[np]];
             std::swap(tiles[ep], tiles[np]);
-            hash ^= g_hash_table[ep][tiles[ep]]; hash ^= g_hash_table[np][tiles[np]];
-            cost += cell_cost(ep);
+            hash ^= g_hash_table[ep][tiles[ep]];
+            md += cell_cost(ep);
             ep = np;
             pdir = dir;
             // 1 byte に 4 個
             cmds[turn >> 2] ^= dir << ((turn & 3) << 1);
             turn++;
+        }
+
+        inline void undo() {
+            turn--;
+            int dir = (cmds[turn >> 2] >> ((turn & 3) << 1)) & 3;
+            // cmds[turn >> 2] の (turn&3)<<1, ((turn&3)<<1)+1 bit 目をクリア
+            cmds[turn >> 2] &= ~(0b11U << ((turn & 3) << 1));
+            int np = ep - d4[dir];
+            md -= cell_cost(np);
+            hash ^= g_hash_table[np][tiles[np]];
+            std::swap(tiles[ep], tiles[np]);
+            hash ^= g_hash_table[ep][tiles[ep]];
+            md += cell_cost(ep);
+            ep = np;
+            pdir = !turn ? -1 : ((cmds[(turn - 1) >> 2] >> (((turn - 1) & 3) << 1)) & 3);
+        }
+
+        int16_t look_ahead(int depth) {
+            //dump(depth);
+            if (!md || !depth) return md;
+            int16_t cost = md;
+            for (int d = 0; d < 4; d++) {
+                if (!can_move(d)) continue;
+                //print();
+                move(d);
+                cost = std::min(cost, look_ahead(depth - 1));
+                undo();
+                //print();
+            }
+            return cost;
         }
 
         string get_cmd() const {
@@ -1173,6 +1209,21 @@ namespace NBeam {
 
     };
 
+    bool equals(const State& s1, const State& s2) {
+        if (s1.turn != s2.turn) return false;
+        if (s1.md != s2.md) return false;
+        if (s1.ep != s2.ep) return false;
+        if (s1.pdir != s2.pdir) return false;
+        if (s1.hash != s2.hash) return false;
+        if(memcmp(s1.tiles, s2.tiles, sizeof(uint8_t) * 192)) return false;
+        if (memcmp(s1.cmds, s2.cmds, sizeof(uint8_t) * (max_beam_turn >> 2))) return false;
+        return true;
+    }
+
+    void set_cost(State& s) {
+        s.cost = s.look_ahead(1);
+    }
+
     State beam_search(State init_state, double duration) {
         static constexpr int beam_width = 10000, degree = 4;
         static State sbuf[2][beam_width * degree];
@@ -1183,6 +1234,8 @@ namespace NBeam {
         int now_buffer = 0;
         int buf_size[2] = {};
 
+        set_cost(init_state);
+
         sbuf[now_buffer][0] = init_state;
         ord[0] = 0;
         buf_size[now_buffer]++;
@@ -1192,7 +1245,7 @@ namespace NBeam {
         seen.insert(init_state.hash);
 
         int turn = 0;
-        while (buf_size[now_buffer] && turn < g_T && timer.elapsed_ms() < duration && best_state.cost) {
+        while (buf_size[now_buffer] && turn < g_T && timer.elapsed_ms() < duration && best_state.md) {
 
             auto& now_states = sbuf[now_buffer];
             auto& now_size = sbuf[now_buffer];
@@ -1203,6 +1256,17 @@ namespace NBeam {
                 auto& now_state = now_states[ord[n]];
                 for (int d = 0; d < 4; d++) {
                     if (!now_state.can_move(d)) continue;
+#if 1
+                    auto tmp = now_state;
+                    now_state.move(d);
+                    if (!seen.contain(now_state.hash)) {
+                        seen.insert(now_state.hash);
+                        next_states[next_size] = now_state;
+                        set_cost(next_states[next_size]);
+                        next_size++;
+                    }
+                    now_state.undo();
+#else
                     auto& next_state = next_states[next_size];
                     next_state = now_state;
                     next_state.move(d);
@@ -1210,6 +1274,7 @@ namespace NBeam {
                         seen.insert(next_state.hash);
                         next_size++;
                     }
+#endif
                 }
             }
 
@@ -1219,9 +1284,9 @@ namespace NBeam {
                 return next_states[a].cost < next_states[b].cost;
                 });
             
-            if (next_states[ord[0]].cost < best_state.cost) {
+            if (next_states[ord[0]].md < best_state.md) {
                 best_state = next_states[ord[0]];
-                //dump(turn, best_state.cost);
+                //dump(turn, best_state.md);
             }
 
             now_buffer ^= 1; // toggle buffer
@@ -1261,6 +1326,16 @@ namespace NPuzzle {
             }
             md = calc_md_naive();
             std::tie(ei, ej) = get_pos(N * N - 1);
+        }
+
+        void output_problem(std::ostream& out) const {
+            out << N << '\n';
+            for (int i = 0; i < N; i++) {
+                for (int j = 0; j < N; j++) {
+                    out << tiles[i][j] << ' ';
+                }
+                out << '\n';
+            }
         }
 
 #ifdef HAVE_OPENCV_HIGHGUI
@@ -1506,110 +1581,40 @@ namespace NPuzzle {
             vector<State> res;
 
             int ed = get_dir(si, sj, ei, ej);
+            assert(ed != td);
 
-            if (((ed + 1) & 3) == td) {
-                bool cw_ok = true;
-                for (int d = (ed * 2 + 1) & 7; d != ((td * 2 + 1) & 7); d = (d + 1) & 7) {
-                    if (!is_inside(si + di8[d], sj + dj8[d]) || fixed[si + di8[d]][sj + dj8[d]]) {
-                        cw_ok = false;
-                        break;
-                    }
-                }
-                if (cw_ok) {
-                    auto state(*this);
-                    for (int d = ed * 2; d != td * 2; d = (d + 1) & 7) {
-                        state.move(dcw[d]);
-                    }
-                    int d = state.get_dir(state.ei, state.ej, si, sj);
-                    state.move(d);
-                    res.push_back(state);
-                }
-                bool ccw_ok = true;
-                for (int d = (ed * 2 + 7) & 7; d != ((td * 2 + 7) & 7); d = (d + 7) & 7) {
-                    if (!is_inside(si + di8[d], sj + dj8[d]) || fixed[si + di8[d]][sj + dj8[d]]) {
-                        ccw_ok = false;
-                        break;
-                    }
-                }
-                if (ccw_ok) {
-                    auto state(*this);
-                    for (int d = ed * 2; d != td * 2; d = (d + 7) & 7) {
-                        state.move(dccw[d]);
-                    }
-                    int d = state.get_dir(state.ei, state.ej, si, sj);
-                    state.move(d);
-                    res.push_back(state);
+            // TODO: 短い方のみ採用
+            bool cw_ok = true;
+            for (int d = (ed * 2 + 1) & 7; d != ((td * 2 + 1) & 7); d = (d + 1) & 7) {
+                if (!is_inside(si + di8[d], sj + dj8[d]) || fixed[si + di8[d]][sj + dj8[d]]) {
+                    cw_ok = false;
+                    break;
                 }
             }
-
-            if (((ed + 3) & 3) == td) {
-                bool cw_ok = true;
-                for (int d = (ed * 2 + 1) & 7; d != ((td * 2 + 1) & 7); d = (d + 1) & 7) {
-                    if (!is_inside(si + di8[d], sj + dj8[d]) || fixed[si + di8[d]][sj + dj8[d]]) {
-                        cw_ok = false;
-                        break;
-                    }
+            if (cw_ok) {
+                auto state(*this);
+                for (int d = ed * 2; d != td * 2; d = (d + 1) & 7) {
+                    state.move(dcw[d]);
                 }
-                if (cw_ok) {
-                    auto state(*this);
-                    for (int d = ed * 2; d != td * 2; d = (d + 1) & 7) {
-                        state.move(dcw[d]);
-                    }
-                    int d = state.get_dir(state.ei, state.ej, si, sj);
-                    state.move(d);
-                    res.push_back(state);
-                }
-                bool ccw_ok = true;
-                for (int d = (ed * 2 + 7) & 7; d != ((td * 2 + 7) & 7); d = (d + 7) & 7) {
-                    if (!is_inside(si + di8[d], sj + dj8[d]) || fixed[si + di8[d]][sj + dj8[d]]) {
-                        ccw_ok = false;
-                        break;
-                    }
-                }
-                if (ccw_ok) {
-                    auto state(*this);
-                    for (int d = ed * 2; d != td * 2; d = (d + 7) & 7) {
-                        state.move(dccw[d]);
-                    }
-                    int d = state.get_dir(state.ei, state.ej, si, sj);
-                    state.move(d);
-                    res.push_back(state);
+                int d = state.get_dir(state.ei, state.ej, si, sj);
+                state.move(d);
+                res.push_back(state);
+            }
+            bool ccw_ok = true;
+            for (int d = (ed * 2 + 7) & 7; d != ((td * 2 + 7) & 7); d = (d + 7) & 7) {
+                if (!is_inside(si + di8[d], sj + dj8[d]) || fixed[si + di8[d]][sj + dj8[d]]) {
+                    ccw_ok = false;
+                    break;
                 }
             }
-
-            if (((ed + 2) & 3) == td) {
-                bool cw_ok = true;
-                for (int d = (ed * 2 + 1) & 7; d != ((td * 2 + 1) & 7); d = (d + 1) & 7) {
-                    if (!is_inside(si + di8[d], sj + dj8[d]) || fixed[si + di8[d]][sj + dj8[d]]) {
-                        cw_ok = false;
-                        break;
-                    }
+            if (ccw_ok) {
+                auto state(*this);
+                for (int d = ed * 2; d != td * 2; d = (d + 7) & 7) {
+                    state.move(dccw[d]);
                 }
-                if (cw_ok) { // ed + 180deg = td
-                    auto state(*this);
-                    for (int d = ed * 2; d != td * 2; d = (d + 1) & 7) {
-                        state.move(dcw[d]);
-                    }
-                    int d = state.get_dir(state.ei, state.ej, si, sj);
-                    state.move(d);
-                    res.push_back(state);
-                }
-                bool ccw_ok = true;
-                for (int d = (ed * 2 + 7) & 7; d != ((td * 2 + 7) & 7); d = (d + 7) & 7) {
-                    if (!is_inside(si + di8[d], sj + dj8[d]) || fixed[si + di8[d]][sj + dj8[d]]) {
-                        ccw_ok = false;
-                        break;
-                    }
-                }
-                if (ccw_ok) { // ed - 180deg = td
-                    auto state(*this);
-                    for (int d = ed * 2; d != td * 2; d = (d + 7) & 7) {
-                        state.move(dccw[d]);
-                    }
-                    int d = state.get_dir(state.ei, state.ej, si, sj);
-                    state.move(d);
-                    res.push_back(state);
-                }
+                int d = state.get_dir(state.ei, state.ej, si, sj);
+                state.move(d);
+                res.push_back(state);
             }
 
             return res;
@@ -1851,311 +1856,6 @@ namespace NPuzzle {
 
 }
 
-struct PuzzleSolver {
-
-    int N;
-    int ei, ej;
-    vector<vector<int>> tiles;
-    vector<vector<bool>> fixed;
-    string cmds;
-
-    // 4x4 の場合
-    // 0 を (0,0) に移動
-    // 1 を (0,1) に移動
-    // 2 を (0,2) に移動
-    // 3 を (0+2,3) に移動
-    // 空きマスを (0+1,2) に移動
-    // URDLURDDLUURD (2,3 が揃う)
-    // 4 を (1,0) に移動
-    // 8 を (2,0) に移動
-    // 12 を (3,0+2) に移動
-    // 空きマスを (2,0+1) に移動
-    // LDRULDRRULLDR (8,12 が揃う)
-    // ...
-
-    PuzzleSolver(int N, const NFlow::Result& assign) : N(N) {
-        tiles.resize(N, vector<int>(N));
-        fixed.resize(N, vector<bool>(N));
-        for (const auto& as : assign.type_to_assign) {
-            for (const auto& a : as) {
-                tiles[extract_i(a.first.p) - 1][extract_j(a.first.p) - 1] = (extract_i(a.second.p) - 1) * N + (extract_j(a.second.p) - 1);
-            }
-        }
-        std::tie(ei, ej) = get_pos(N * N - 1);
-    }
-
-    bool is_solvable() const {
-        // 転倒数の偶奇と空マスの偶奇が等しければ解ける
-        int inv = 0;
-        for (int i = 0; i < N * N - 1; i++) {
-            for (int j = i + 1; j < N * N; j++) {
-                inv += tiles[i / N][i % N] > tiles[j / N][j % N];
-            }
-        }
-        int dist = abs(ei - (N - 1)) + abs(ej - (N - 1));
-        return inv % 2 == dist % 2;
-    }
-
-    void run() {
-        for (int layer = 0; layer < N - 2; layer++) {
-            align(layer);
-        }
-        move_number(IJ(N - 2, N - 2), N - 2, N - 2);
-        move_empty_cell(N - 1, N - 1);
-    }
-
-    void run_with_beam_search(int level, double duration) {
-        // level*level 以下の正方形になったら beam search を走らせる
-        int align_layer_size = std::max(0, N - level);
-        for (int layer = 0; layer < align_layer_size; layer++) {
-            align(layer);
-        }
-
-        int offset = -align_layer_size;
-        vector<std::tuple<int, int, int, int>> assign;
-        for (int i = align_layer_size; i < N; i++) {
-            for (int j = align_layer_size; j < N; j++) {
-                int ti = tiles[i][j] / N, tj = tiles[i][j] % N;
-                assign.emplace_back(i + offset, j + offset, ti + offset, tj + offset);
-            }
-        }
-
-        NBeam::State bs(N - align_layer_size, 2 * N * N * N - cmds.size(), assign);
-        bs = NBeam::beam_search(bs, duration);
-
-        cmds += bs.get_cmd();
-    }
-
-    inline pii get_pos(int n) const {
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                if (tiles[i][j] == n) {
-                    return { i, j };
-                }
-            }
-        }
-        assert(false);
-        return { -1, -1 };
-    }
-
-    inline int IJ(int i, int j) const {
-        return i * N + j;
-    }
-
-    void align(int layer) {
-
-        vector<std::pair<int, bool>> pib; // (target num, 特殊処理?)
-        pib.emplace_back(IJ(layer, layer), false);
-        for (int j = layer + 1; j < N - 1; j++) {
-            pib.emplace_back(IJ(layer, j), false);
-        }
-        pib.emplace_back(IJ(layer, N - 1), true);
-        for (int i = layer + 1; i < N - 1; i++) {
-            pib.emplace_back(IJ(i, layer), false);
-        }
-        pib.emplace_back(IJ(N - 1, layer), true);
-
-        for (auto [n, f] : pib) {
-            int ti = n / N, tj = n % N; // 目的地
-            if (f) {
-                auto [si, sj] = get_pos(n);
-                int dist = abs(si - ti) + abs(sj - tj);
-                // 特殊処理
-                if (dist == 0) {
-                    // 既に揃っている
-                    fixed[ti][tj] = true;
-                }
-                else if (tiles[ti][tj] == N * N - 1 && dist == 1) {
-                    // 目的地が空マスで、距離が 1
-                    int dir = get_dir(ti, tj, si, sj);
-                    move(d2c[dir]);
-                    fixed[ti][tj] = true;
-                }
-                else {
-                    if (tj == N - 1) {
-                        move_number(n, ti + 2, tj);
-                        move_empty_cell(ti + 1, tj - 1);
-                        fixed[ti][tj - 1] = fixed[ti + 2][tj] = false;
-                        move("URDLURDDLUURD");
-                        fixed[ti][tj - 1] = fixed[ti][tj] = true;
-                    }
-                    else {
-                        move_number(n, ti, tj + 2);
-                        move_empty_cell(ti - 1, tj + 1);
-                        fixed[ti - 1][tj] = fixed[ti][tj + 2] = false;
-                        move("LDRULDRRULLDR");
-                        fixed[ti - 1][tj] = fixed[ti][tj] = true;
-                    }
-
-                }
-            }
-            else {
-                move_number(n, ti, tj);
-            }
-        }
-
-    }
-
-    inline void move(char c) {
-        int d = c2d[c];
-        std::swap(tiles[ei][ej], tiles[ei + di[d]][ej + dj[d]]);
-        ei += di[d]; ej += dj[d];
-        if (!cmds.empty() && ((c2d[c] + 2) & 3) == c2d[cmds.back()]) {
-            cmds.pop_back();
-        }
-        else {
-            cmds += c;
-        }
-        //show();
-    }
-
-    inline void move(const string& s) {
-        for (char c : s) move(c);
-    }
-
-    vector<pii> calc_zigzag_shortest_path(int si, int sj, int ti, int tj) const {
-        assert(!(si == ti && sj == tj));
-        bool seen[10][10];
-        pii prev[10][10];
-        Fill(seen, false);
-        Fill(prev, pii(-1, -1));
-        // TODO: abs(ti-si), abs(tj-sj) の大小で最初の移動方向を変化させる
-        std::queue<std::tuple<int, int, int>> qu({ {si, sj, -1} }); // (i,j,prev_dir)
-        seen[si][sj] = true;
-        while (!qu.empty()) {
-            auto [i, j, pd] = qu.front(); qu.pop();
-            if (i == ti && j == tj) break;
-            for (int d = 0; d < 4; d++) if (d != pd) {
-                int ni = i + di[d], nj = j + dj[d];
-                if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj] || seen[ni][nj]) continue;
-                seen[ni][nj] = true;
-                prev[ni][nj] = { i, j };
-                qu.emplace(ni, nj, d);
-            }
-            if (pd != -1) {
-                int ni = i + di[pd], nj = j + dj[pd];
-                if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj] || seen[ni][nj]) continue;
-                seen[ni][nj] = true;
-                prev[ni][nj] = { i, j };
-                qu.emplace(ni, nj, pd);
-            }
-        }
-        assert(prev[ti][tj].first != -1);
-        vector<pii> path;
-        {
-            pii p(ti, tj);
-            path.push_back(p);
-            while (p.first != -1) {
-                p = prev[p.first][p.second];
-                if (p.first == -1) break;
-                path.push_back(p);
-            }
-            reverse(path.begin(), path.end());
-        }
-        return path;
-    }
-
-    void move_empty_cell(int ti, int tj) {
-        if (ei == ti && ej == tj) {
-            return;
-        }
-        // empty cell を (ti,tj) まで動かす
-        bool seen[10][10];
-        pii prev[10][10];
-        Fill(seen, false);
-        Fill(prev, pii(-1, -1));
-        std::queue<pii> qu({ {ei, ej} }); // (i,j,prev_dir)
-        seen[ei][ej] = true;
-        while (!qu.empty()) {
-            auto [i, j] = qu.front(); qu.pop();
-            if (i == ti && j == tj) break;
-            for (int d = 0; d < 4; d++) {
-                int ni = i + di[d], nj = j + dj[d];
-                if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj] || seen[ni][nj]) continue;
-                seen[ni][nj] = true;
-                prev[ni][nj] = { i, j };
-                qu.emplace(ni, nj);
-            }
-        }
-        vector<pii> path;
-        {
-            pii p(ti, tj);
-            path.push_back(p);
-            while (p.first != -1) {
-                p = prev[p.first][p.second];
-                if (p.first == -1) break;
-                path.push_back(p);
-            }
-            reverse(path.begin(), path.end());
-        }
-        for (int i = 0; i + 1 < path.size(); i++) {
-            auto [i1, j1] = path[i];
-            auto [i2, j2] = path[i + 1];
-            int dir = get_dir(i1, j1, i2, j2);
-            move(d2c[dir]);
-        }
-    }
-
-    int get_dir(int si, int sj, int ti, int tj) const {
-        if (si == ti) {
-            return sj < tj ? c2d['R'] : c2d['L'];
-        }
-        return si < ti ? c2d['D'] : c2d['U'];
-    }
-
-    void move_number(int n, int ti, int tj) {
-
-        // 数字 n を (ti, tj) まで移動させる
-        // n から (ti, tj) までなるべく蛇行しながら到達するルートを求める (fixed を避ける)
-
-        auto [si, sj] = get_pos(n);
-
-        if (si == ti && sj == tj) {
-            fixed[ti][tj] = true;
-            return;
-        }
-
-        auto path = calc_zigzag_shortest_path(si, sj, ti, tj);
-
-        for (int k = 0; k + 1 < path.size(); k++) {
-            auto [i1, j1] = path[k];
-            auto [i2, j2] = path[k + 1];
-            // 空マスを (i2,j2) に移動させる
-            fixed[i1][j1] = true;
-            move_empty_cell(i2, j2);
-            fixed[i1][j1] = false;
-            int dir = get_dir(i2, j2, i1, j1);
-            move(d2c[dir]);
-        }
-
-        fixed[ti][tj] = true;
-    }
-
-#ifdef HAVE_OPENCV_HIGHGUI
-    void show(int delay = 0) {
-        int N = tiles.size();
-        int sz = 800 / N, H = sz * N, W = sz * N;
-        cv::Mat_<cv::Vec3b> img(H, W, cv::Vec3b(255, 255, 255));
-        for (int i = 0; i <= N; i++) {
-            cv::line(img, cv::Point(0, i * sz), cv::Point(W, i * sz), cv::Scalar(200, 200, 200), 2);
-            cv::line(img, cv::Point(i * sz, 0), cv::Point(i * sz, H), cv::Scalar(200, 200, 200), 2);
-        }
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                if (tiles[i][j] == N * N - 1) continue;
-                cv::Point ctr(j * sz + sz / 3, i * sz + sz / 2);
-                cv::putText(img, std::to_string(tiles[i][j]), ctr, cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 0), 2);
-            }
-        }
-        cv::imshow("img", img);
-        cv::waitKey(delay);
-    }
-#endif
-
-};
-
-
-
 #ifdef HAVE_OPENCV_HIGHGUI
 void show(const vector<vector<int>>& tiles, int delay = 0) {
     int N = tiles.size();
@@ -2194,6 +1894,7 @@ int main(int argc, char** argv) {
     Input input;
     if (argc > 1) {
         int seed = atoi(argv[1]);
+        //int seed = 0;
         dump(seed);
         std::ifstream ifs(format("tools/in/%04d.txt", seed));
         input = Input(ifs);
