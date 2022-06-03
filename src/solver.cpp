@@ -572,6 +572,7 @@ struct Input {
         }
     }
 
+    // TODO: 空マスが右下以外の木の生成
     Input(uint16_t N_, Xorshift& rnd, int nshuffle = 0) : N(N_), T(2 * N * N * N) {
         std::fill(tiles, tiles + 192, UCHAR_MAX);
         for (int i = 1; i <= N; i++) {
@@ -984,23 +985,59 @@ namespace NFlow {
         }
     };
 
+    template< typename T >
+    std::pair<T, vector<int>> hungarian(vector<vector<T>>& A) {
+        const T infty = std::numeric_limits<T>::max();
+        const int N = (int)A.size();
+        const int M = (int)A[0].size();
+        vector<int> P(M), way(M);
+        vector<T> U(N, 0), V(M, 0), minV;
+        vector<bool> used;
+
+        for (int i = 1; i < N; i++) {
+            P[0] = i;
+            minV.assign(M, infty);
+            used.assign(M, false);
+            int j0 = 0;
+            while (P[j0] != 0) {
+                int i0 = P[j0], j1 = 0;
+                used[j0] = true;
+                T delta = infty;
+                for (int j = 1; j < M; j++) {
+                    if (used[j]) continue;
+                    T curr = A[i0][j] - U[i0] - V[j];
+                    if (curr < minV[j]) minV[j] = curr, way[j] = j0;
+                    if (minV[j] < delta) delta = minV[j], j1 = j;
+                }
+                for (int j = 0; j < M; j++) {
+                    if (used[j]) U[P[j]] += delta, V[j] -= delta;
+                    else minV[j] -= delta;
+                }
+                j0 = j1;
+            }
+            do {
+                P[j0] = P[way[j0]];
+                j0 = way[j0];
+            } while (j0 != 0);
+        }
+        return { -V[0], P };
+    }
+
     struct Node {
         int id;
         uint8_t p;
         Node(int id = -1, uint8_t p = UCHAR_MAX) : id(id), p(p) {}
     };
 
-    using Assign = std::pair<Node, Node>;
-
     struct Result {
         int total_cost;
-        vector<vector<Assign>> type_to_assign;
+        vector<vector<pii>> type_to_assign;
     };
 
-    vector<Assign> get_assign(
+    vector<pii> get_assign(
         const vector<Node>& S, const vector<Node>& T, const PrimalDual& pd) {
         int ns = S.size();
-        vector<Assign> assign;
+        vector<pii> assign;
         for (int u = 1; u <= (int)S.size(); u++) {
             for (const auto& e : pd.graph[u]) {
                 if (e.isrev) continue;
@@ -1008,7 +1045,7 @@ namespace NFlow {
                 if (!rev_e.cap) continue;
                 // i -> e.to
                 int v = e.to;
-                assign.emplace_back(S[u - 1], T[v - ns - 1]);
+                assign.emplace_back(S[u - 1].p, T[v - ns - 1].p);
             }
         }
         return assign;
@@ -1036,7 +1073,7 @@ namespace NFlow {
         }
         // mincostflow
         int total_cost = 0;
-        for (int t = 0; t < 16; t++) {
+        for (int t = 1; t < 16; t++) {
             if (S[t].empty()) continue;
             int ns = S[t].size(), nt = T[t].size();
             int V = ns + nt + 2;
@@ -1063,8 +1100,48 @@ namespace NFlow {
         }
 
         result.total_cost = total_cost;
-
         return result;
+    }
+
+    vector<pii> get_assign2(const vector<pii>& from, const vector<pii>& to, const vector<int>& p) {
+        vector<pii> res;
+        for (int i = 1; i < from.size(); i++) {
+            res.emplace_back(pack_p(from[p[i]].first, from[p[i]].second), pack_p(to[i].first, to[i].second));
+        }
+        return res;
+    }
+
+    Result calc_assign2(const Input& input, const TreeModifier& tmod) {
+        vector<vector<pii>> from(16, { {-1,-1} }), to(16, { {-1,-1} });
+        int N = input.N;
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                from[input.tiles[pack_p(i, j)]].emplace_back(i, j);
+                to[tmod.tiles[pack_p(i, j)]].emplace_back(i, j);
+            }
+        }
+        Result res;
+        res.total_cost = 0;
+        res.type_to_assign.resize(16);
+        //res.type_to_assign[0].emplace_back(pack_p(from[0][1].first, from[0][1].second), pack_p(to[0][1].first, to[0][1].second));
+        for (int t = 1; t < 16; t++) {
+            if (from[t].empty()) continue;
+            const auto& fps = from[t];
+            const auto& tps = to[t];
+            auto dist = make_vector(0, fps.size(), tps.size());
+            for (int i = 1; i < fps.size(); i++) {
+                auto [fi, fj] = fps[i];
+                for (int j = 1; j < tps.size(); j++) {
+                    auto [ti, tj] = tps[j];
+                    dist[i][j] = abs(fi - ti) + abs(fj - tj);
+                }
+            }
+            auto [cost, p] = hungarian(dist);
+            //dump(t, cost, fps, tps, p);
+            res.total_cost += cost;
+            res.type_to_assign[t] = get_assign2(from[t], to[t], p);
+        }
+        return res;
     }
 
 }
@@ -1220,9 +1297,9 @@ namespace NBeam {
         return true;
     }
 
-    void set_cost(State& s) {
-        s.cost = s.look_ahead(1);
-    }
+    //void set_cost(State& s) {
+    //    s.cost = s.look_ahead(0);
+    //}
 
     State beam_search(State init_state, double duration) {
         static constexpr int beam_width = 10000, degree = 4;
@@ -1234,7 +1311,7 @@ namespace NBeam {
         int now_buffer = 0;
         int buf_size[2] = {};
 
-        set_cost(init_state);
+        //set_cost(init_state);
 
         sbuf[now_buffer][0] = init_state;
         ord[0] = 0;
@@ -1256,7 +1333,7 @@ namespace NBeam {
                 auto& now_state = now_states[ord[n]];
                 for (int d = 0; d < 4; d++) {
                     if (!now_state.can_move(d)) continue;
-#if 1
+#if 0
                     auto tmp = now_state;
                     now_state.move(d);
                     if (!seen.contain(now_state.hash)) {
@@ -1281,7 +1358,7 @@ namespace NBeam {
             if (!next_size) break;
             std::iota(ord, ord + next_size, 0);
             std::sort(ord, ord + next_size, [&next_states](int a, int b) {
-                return next_states[a].cost < next_states[b].cost;
+                return next_states[a].md < next_states[b].md;
                 });
             
             if (next_states[ord[0]].md < best_state.md) {
@@ -1317,11 +1394,11 @@ namespace NPuzzle {
         State() {}
 
         State(int N, const NFlow::Result& assign) : N(N) {
-            tiles.resize(N, vector<int>(N));
+            tiles.resize(N, vector<int>(N, N*N-1));
             fixed.resize(N, vector<bool>(N));
             for (const auto& as : assign.type_to_assign) {
                 for (const auto& a : as) {
-                    tiles[extract_i(a.first.p) - 1][extract_j(a.first.p) - 1] = (extract_i(a.second.p) - 1) * N + (extract_j(a.second.p) - 1);
+                    tiles[extract_i(a.first) - 1][extract_j(a.first) - 1] = (extract_i(a.second) - 1) * N + (extract_j(a.second) - 1);
                 }
             }
             md = calc_md_naive();
@@ -1810,6 +1887,10 @@ namespace NPuzzle {
             move_empty_cell(N - 1, N - 1);
         }
 
+        void partial_run(int layer) {
+            for (int l = 0; l < layer; l++) align(l);
+        }
+
         void run_with_beam_search(int level, double duration) {
             // level*level 以下の正方形になったら beam search を走らせる
             int align_layer_size = std::max(0, N - level);
@@ -1879,6 +1960,12 @@ void show(const vector<vector<int>>& tiles, int delay = 0) {
 }
 #endif
 
+void initialize() {
+    c2d['L'] = 0; c2d['U'] = 1; c2d['R'] = 2; c2d['D'] = 3;
+    for (char c = '0'; c <= '9'; c++) c2t[c] = c - '0';
+    for (char c = 'a'; c <= 'f'; c++) c2t[c] = c - 'a' + 10;
+}
+
 int main(int argc, char** argv) {
 
     Timer timer;
@@ -1887,14 +1974,12 @@ int main(int argc, char** argv) {
     cv::utils::logging::setLogLevel(cv::utils::logging::LogLevel::LOG_LEVEL_SILENT);
 #endif
 
-    c2d['L'] = 0; c2d['U'] = 1; c2d['R'] = 2; c2d['D'] = 3;
-    for (char c = '0'; c <= '9'; c++) c2t[c] = c - '0';
-    for (char c = 'a'; c <= 'f'; c++) c2t[c] = c - 'a' + 10;
+    initialize();
 
     Input input;
     if (argc > 1) {
-        int seed = atoi(argv[1]);
-        //int seed = 0;
+        //int seed = atoi(argv[1]);
+        int seed = 4;
         dump(seed);
         std::ifstream ifs(format("tools/in/%04d.txt", seed));
         input = Input(ifs);
@@ -1912,9 +1997,9 @@ int main(int argc, char** argv) {
         while (tmod.cost) {
             tmod.local_search(rnd);
         }
-        auto res = NFlow::calc_assign(input, tmod);
+
+        auto res = NFlow::calc_assign2(input, tmod);
         NPuzzle::State puz(input.N, res);
-        //PuzzleSolver puz(input.N, res);
         if (puz.is_solvable()) {
             // solve puzzle: TODO 回数多いほどよさそう　要高速化
             if (false) {
@@ -1927,10 +2012,12 @@ int main(int argc, char** argv) {
                 }
             }
             // for beam search
-            if (res.total_cost < min_cost) {
-                assign = res;
-                min_cost = res.total_cost;
-                dump(min_cost);
+            if (true) {
+                if (res.total_cost < min_cost) {
+                    assign = res;
+                    min_cost = res.total_cost;
+                    dump(min_cost);
+                }
             }
         }
     }
@@ -1944,30 +2031,6 @@ int main(int argc, char** argv) {
             best_score = score;
             ans = puz.cmds;
             dump(best_score);
-        }
-    }
-
-    if (false) { // beamsearch only
-        int N = input.N;
-        vector<vector<uint8_t>> tiles(N, vector<uint8_t>(N));
-        for (const auto& as : assign.type_to_assign) {
-            for (const auto& a : as) {
-                tiles[extract_i(a.first.p) - 1][extract_j(a.first.p) - 1] = (extract_i(a.second.p) - 1) * N + (extract_j(a.second.p) - 1);
-            }
-        }
-        vector<std::tuple<int, int, int, int>> as;
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                int ti = tiles[i][j] / N, tj = tiles[i][j] % N;
-                as.emplace_back(i, j, ti, tj);
-            }
-        }
-        NBeam::State bs(N, input.T, as);
-        bs = NBeam::beam_search(bs, 2900 - timer.elapsed_ms());
-        int score = NJudge::compute_score(input.cvt(), bs.get_cmd());
-        if (chmax(best_score, score)) {
-            ans = bs.get_cmd();
-            dump(best_score)
         }
     }
 
