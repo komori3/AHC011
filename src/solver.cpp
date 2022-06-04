@@ -1010,13 +1010,79 @@ namespace NBeam {
         }
     } hash_setup;
 
+    struct LCSolver {
+        int N, e, ctr;
+        int p[10];
+        int nadj[10];
+        bool adj[10][10];
+
+        void setup(int N) {
+            this->N = N;
+            e = pack_p(N - 1, N - 1);
+        }
+
+        int calc() {
+            std::memset(nadj, 0, sizeof(int) * ctr);
+            std::memset(adj, 0, sizeof(bool) * 10 * ctr);
+            for (int i = 0; i + 1 < ctr; i++) {
+                for (int j = i + 1; j < ctr; j++) {
+                    bool b = p[i] > p[j];
+                    adj[i][j] = adj[j][i] = b;
+                    nadj[i] += b;
+                    nadj[j] += b;
+                }
+            }
+            int lc = 0;
+            while (true) {
+                auto it = std::max_element(nadj, nadj + ctr);
+                if (*it == 0) break;
+                int u = std::distance(nadj, it);
+                for (int v = 0; v < ctr; v++) {
+                    if (adj[u][v]) {
+                        adj[u][v] = adj[v][u] = false;
+                        nadj[u]--;
+                        nadj[v]--;
+                    }
+                }
+                lc++;
+            }
+            return lc;
+        }
+
+        int calc_row(const uint8_t* tiles, int row) {
+            ctr = 0;
+            for (int col = 0; col < N; col++) { // TODO
+                int t = tiles[pack_p(row, col)];
+                if (t != e && extract_i(t) == row) {
+                    p[ctr++] = t;
+                }
+            }
+            if (ctr <= 1) return 0;
+            return calc();
+        }
+
+        int calc_col(const uint8_t* tiles, int col) {
+            ctr = 0;
+            for (int row = 0; row < N; row++) { // TODO
+                int t = tiles[pack_p(row, col)];
+                if (t != e && extract_j(t) == col) {
+                    p[ctr++] = t;
+                }
+            }
+            if (ctr <= 1) return 0;
+            return calc();
+        }
+
+    } g_lcsol;
+
     struct State;
     using StatePtr = std::shared_ptr<State>;
     struct State {
 
         int16_t turn;
-        int16_t md, cost;
         uint8_t tiles[192];
+        int16_t md, lc;
+        uint8_t lc_r[10], lc_c[10];
         uint8_t ep;
         int8_t pdir;
         uint8_t cmds[max_beam_turn >> 2]; // >= 2bit * 2000
@@ -1026,7 +1092,14 @@ namespace NBeam {
 
         State(int N, int T, const vector<std::tuple<int, int, int, int>>& assign) {
 
-            initialize();
+            turn = md = lc = 0;
+            std::fill(tiles, tiles + 192, UCHAR_MAX);
+            ep = -1;
+            pdir = -1;
+            std::fill(cmds, cmds + (max_beam_turn >> 2), 0);
+            hash = 0;
+
+            g_lcsol.setup(N);
 
             int tp_empty = pack_p(N - 1, N - 1);
             for (auto [si, sj, ti, tj] : assign) {
@@ -1039,21 +1112,23 @@ namespace NBeam {
                 }
                 md += cell_cost(sp);
             }
+            for (int r = 0; r < N; r++) {
+                lc_r[r] = g_lcsol.calc_row(tiles, r);
+                lc += lc_r[r] * 2;
+            }
+            for (int c = 0; c < N; c++) {
+                lc_c[c] = g_lcsol.calc_col(tiles, c);
+                lc += lc_c[c] * 2;
+            }
 
+        }
+
+        inline int cost() const {
+            return md + lc;
         }
 
         void print() const {
-            cerr << format("turn=%d, md=%d, cost=%d, ep=%d, pdir=%d, hash=%lld\n", turn, md, cost, ep, pdir, hash);
-        }
-
-        void initialize() {
-            turn = md = 0;
-            cost = SHRT_MAX;
-            std::fill(tiles, tiles + 192, UCHAR_MAX);
-            ep = -1;
-            pdir = -1;
-            std::fill(cmds, cmds + (max_beam_turn >> 2), 0);
-            hash = 0;
+            cerr << format("turn=%d, md=%d, lc=%d, ep=%d, pdir=%d, hash=%lld\n", turn, md, lc, ep, pdir, hash);
         }
 
         inline int cell_cost(int p) const {
@@ -1067,11 +1142,27 @@ namespace NBeam {
 
         inline void move(int dir) {
             int np = ep + d4[dir];
+            if (dir & 1) {
+                lc -= (lc_r[extract_i(np)] + lc_r[extract_i(ep)]) * 2;
+            }
+            else {
+                lc -= (lc_c[extract_j(np)] + lc_c[extract_j(ep)]) * 2;
+            }
             md -= cell_cost(np);
             hash ^= g_hash_table[np][tiles[np]];
             std::swap(tiles[ep], tiles[np]);
             hash ^= g_hash_table[ep][tiles[ep]];
             md += cell_cost(ep);
+            if (dir & 1) {
+                lc_r[extract_i(np)] = g_lcsol.calc_row(tiles, extract_i(np));
+                lc_r[extract_i(ep)] = g_lcsol.calc_row(tiles, extract_i(ep));
+                lc += (lc_r[extract_i(np)] + lc_r[extract_i(ep)]) * 2;
+            }
+            else {
+                lc_c[extract_j(np)] = g_lcsol.calc_col(tiles, extract_j(np));
+                lc_c[extract_j(ep)] = g_lcsol.calc_col(tiles, extract_j(ep));
+                lc += (lc_c[extract_j(np)] + lc_c[extract_j(ep)]) * 2;
+            }
             ep = np;
             pdir = dir;
             // 1 byte に 4 個
@@ -1135,7 +1226,7 @@ namespace NBeam {
     //}
 
     State beam_search(State init_state, double duration) {
-        static constexpr int beam_width = 10000, degree = 4;
+        static constexpr int beam_width = 5000, degree = 4;
         static State sbuf[2][beam_width * degree];
         static int ord[beam_width * degree];
 
@@ -1191,7 +1282,7 @@ namespace NBeam {
             if (!next_size) break;
             std::iota(ord, ord + next_size, 0);
             std::sort(ord, ord + next_size, [&next_states](int a, int b) {
-                return next_states[a].md < next_states[b].md;
+                return next_states[a].cost() < next_states[b].cost();
                 });
 
             if (next_states[ord[0]].md < best_state.md) {
@@ -1810,7 +1901,7 @@ int main(int argc, char** argv) {
     initialize();
 
     Input input;
-    int seed = 1;
+    int seed = 4;
     if (argc > 1) {
         //int seed = atoi(argv[1]);
         //int seed = 4;
