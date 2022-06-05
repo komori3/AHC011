@@ -904,9 +904,9 @@ struct LCSolver {
     int nadj[10];
     bool adj[10][10];
 
-    void setup(int N) {
+    void setup(int N, int e) {
         this->N = N;
-        e = pack_p(N - 1, N - 1);
+        this->e = e;
     }
 
     int calc() {
@@ -964,6 +964,37 @@ struct LCSolver {
     }
 
     int calc_all(const uint8_t* tiles) {
+        int res = 0;
+        for (int row = 0; row < N; row++) res += calc_row(tiles, row);
+        for (int col = 0; col < N; col++) res += calc_col(tiles, col);
+        return res;
+    }
+
+    int calc_row(const vector<vector<int>>& tiles, int row) {
+        ctr = 0;
+        for (int col = 0; col < N; col++) {
+            int t = tiles[row][col];
+            if (t != e && t / N == row) {
+                p[ctr++] = t;
+            }
+        }
+        if (ctr <= 1) return 0;
+        return calc();
+    }
+
+    int calc_col(const vector<vector<int>>& tiles, int col) {
+        ctr = 0;
+        for (int row = 0; row < N; row++) {
+            int t = tiles[row][col];
+            if (t != e && t % N == col) {
+                p[ctr++] = t;
+            }
+        }
+        if (ctr <= 1) return 0;
+        return calc();
+    }
+
+    int calc_all(const vector<vector<int>>& tiles) {
         int res = 0;
         for (int row = 0; row < N; row++) res += calc_row(tiles, row);
         for (int col = 0; col < N; col++) res += calc_col(tiles, col);
@@ -1053,7 +1084,7 @@ namespace NFlow {
                 res.tiles[pack_p(fps[p[i]].first, fps[p[i]].second)] = pack_p(tps[i].first, tps[i].second);
         }
         }
-        g_lcsol.setup(N);
+        g_lcsol.setup(N, pack_p(N - 1, N - 1));
         res.total_cost += g_lcsol.calc_all(res.tiles);
         return res;
     }
@@ -1082,8 +1113,6 @@ namespace NBeam {
         }
     } hash_setup;
 
-    struct State;
-    using StatePtr = std::shared_ptr<State>;
     struct State {
 
         int16_t turn;
@@ -1106,7 +1135,7 @@ namespace NBeam {
             std::fill(cmds, cmds + (max_beam_turn >> 2), 0);
             hash = 0;
 
-            g_lcsol.setup(N);
+            g_lcsol.setup(N, pack_p(N - 1, N - 1));
 
             int tp_empty = pack_p(N - 1, N - 1);
             for (auto [si, sj, ti, tj] : assign) {
@@ -1273,6 +1302,7 @@ namespace NPuzzle {
         vector<vector<int>> tiles; // numbers on cell
         vector<vector<bool>> fixed;
         int md; // manhattan distance
+        int lc;
         string cmds; // length = num turns
 
         State() {}
@@ -1288,6 +1318,15 @@ namespace NPuzzle {
             }
             md = calc_md_naive();
             std::tie(ei, ej) = get_pos(N * N - 1);
+        }
+
+        inline void set_lc() {
+            g_lcsol.setup(N, N * N - 1);
+            lc = g_lcsol.calc_all(tiles);
+        }
+
+        inline int cost() const {
+            return md + lc;
         }
 
         void output_problem(std::ostream& out) const {
@@ -1413,36 +1452,66 @@ namespace NPuzzle {
             // 数字 n を T(ti,tj) まで移動させる
             auto [si, sj] = get_pos(n); // 数字 n の現在位置 S
 
-            // E -> S (の 4 近傍)のパスを求める
-            // manhattan distance 増加するなら +2, そうでないなら 0
-            // 01-BFS で
             constexpr int inf = INT_MAX / 4;
+
             vector<vector<int>> dist(N, vector<int>(N, inf));
             vector<vector<int>> prev(N, vector<int>(N, -1));
-            std::deque<pii> dq({ {ei, ej} });
-            dist[ei][ej] = 0;
-            fixed[si][sj] = true; // S を fix
-            while (!dq.empty()) {
-                auto [i, j] = dq.front(); dq.pop_front();
-                for (int d = 0; d < 4; d++) {
-                    int ni = i + di[d], nj = j + dj[d];
-                    if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj]) continue;
-                    // (ni,nj) にあるタイルが (i,j) に移動した際のマンハッタン距離の変化 + 移動距離
-                    int tile = tiles[ni][nj], dst_i = tile / N, dst_j = tile % N;
-                    int cost = abs(dst_i - i) + abs(dst_j - j) - abs(dst_i - ni) - abs(dst_j - nj) + 1;
-                    assert(cost == 0 || cost == 2);
-                    if (chmin(dist[ni][nj], dist[i][j] + cost)) {
-                        prev[ni][nj] = (d + 2) & 3;
-                        if (cost) {
-                            dq.emplace_back(ni, nj);
-                        }
-                        else {
-                            dq.emplace_front(ni, nj);
+            if (false) {
+                // E -> S (の 4 近傍)のパスを求める
+                // manhattan distance 増加するなら +2, そうでないなら 0
+                // 01-BFS で
+                std::deque<pii> dq({ {ei, ej} });
+                dist[ei][ej] = 0;
+                fixed[si][sj] = true; // S を fix
+                while (!dq.empty()) {
+                    auto [i, j] = dq.front(); dq.pop_front();
+                    for (int d = 0; d < 4; d++) {
+                        int ni = i + di[d], nj = j + dj[d];
+                        if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj]) continue;
+                        // (ni,nj) にあるタイルが (i,j) に移動した際のマンハッタン距離の変化 + 移動距離
+                        int tile = tiles[ni][nj], dst_i = tile / N, dst_j = tile % N;
+                        int cost = abs(dst_i - i) + abs(dst_j - j) - abs(dst_i - ni) - abs(dst_j - nj) + 1;
+                        assert(cost == 0 || cost == 2);
+                        if (chmin(dist[ni][nj], dist[i][j] + cost)) {
+                            prev[ni][nj] = (d + 2) & 3;
+                            if (cost) {
+                                dq.emplace_back(ni, nj);
+                            }
+                            else {
+                                dq.emplace_front(ni, nj);
+                            }
                         }
                     }
                 }
+                fixed[si][sj] = false;
             }
-            fixed[si][sj] = false;
+            else {
+                constexpr int coeff = 2;
+                // linear conflict 加味した嘘ダイクストラ
+                set_lc();
+                dist[ei][ej] = cmds.size() * coeff + cost();
+                fixed[si][sj] = true;
+                auto cmp = [&](const State& a, const State& b) { return a.cmds.size() * coeff + a.cost() > a.cmds.size() * coeff + b.cost(); };
+                std::priority_queue<State, vector<State>, decltype(cmp)> pq(cmp);
+                pq.push(*this);
+                while (!pq.empty()) {
+                    auto state = pq.top(); pq.pop();
+                    int i = state.ei, j = state.ej;
+                    if (dist[i][j] < state.cmds.size() * coeff + state.cost()) continue;
+                    for (int d = 0; d < 4; d++) {
+                        int ni = i + di[d], nj = j + dj[d];
+                        if (ni < 0 || ni >= N || nj < 0 || nj >= N || fixed[ni][nj]) continue;
+                        state.move(d);
+                        state.set_lc();
+                        if (chmin(dist[ni][nj], (int)state.cmds.size() * 2 + state.cost())) {
+                            prev[ni][nj] = (d + 2) & 3;
+                            pq.push(state);
+                        }
+                        state.undo();
+                    }
+                }
+                fixed[si][sj] = false;
+            }
 
             // S の 4 近傍のうち、T までのマンハッタン距離が最小となるような候補点を集める
             vector<int> cand_dirs;
@@ -1486,6 +1555,7 @@ namespace NPuzzle {
                 std::reverse(path.begin(), path.end());
                 for (int d : path) move(d);
                 move((dd + 2) & 3); // S と交換するまでやってしまう
+                set_lc();
                 init_states.push_back(*this);
                 while (cmds.size() > checkpoint) undo();
             }
@@ -1513,12 +1583,13 @@ namespace NPuzzle {
                         if (nlen == len - 1) {
                             for (const auto& next_state : state.next_state(si2, sj2, td)) {
                                 next_states.push_back(next_state);
+                                next_states.back().set_lc();
                             }
                         }
                     }
                 }
                 sort(next_states.begin(), next_states.end(), [](const State& a, const State& b) {
-                    return a.cmds.size() * 2 + a.md < b.cmds.size() * 2 + b.md;
+                    return a.cmds.size() + a.cost() < b.cmds.size() + b.cost();
                     });
                 while (next_states.size() > width) next_states.pop_back();
                 now_states = next_states;
