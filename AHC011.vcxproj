@@ -72,6 +72,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>opencv_world455d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <StackReserveSize>1073741824</StackReserveSize>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -90,6 +91,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>opencv_world455.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <StackReserveSize>1073741824</StackReserveSize>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

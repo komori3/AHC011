@@ -1199,10 +1199,10 @@ namespace NBeam {
         return true;
     }
 
-    State beam_search(State init_state, double duration) {
-        static constexpr int beam_width = 5000, degree = 4;
-        static State sbuf[2][beam_width * degree];
-        static int ord[beam_width * degree];
+    State beam_search(State init_state, int beam_width, double duration) {
+        static constexpr int max_beam_width = 15000, degree = 4;
+        static State sbuf[2][max_beam_width * degree];
+        static int ord[max_beam_width * degree];
 
         Timer timer;
 
@@ -1793,7 +1793,10 @@ namespace NPuzzle {
             }
 
             NBeam::State bs(N - align_layer_size, NBeam::max_beam_turn, assign);
-            bs = NBeam::beam_search(bs, duration);
+            int beam_width = 5000;
+            if (N == 6) beam_width = 15000;
+            if (N == 7) beam_width = 7000;
+            bs = NBeam::beam_search(bs, beam_width, duration);
 
             cmds += bs.get_cmd();
         }
@@ -1862,7 +1865,7 @@ int main(int argc, char** argv) {
     initialize();
 
     Input input;
-    int seed = 1;
+    int seed = 4;
     if (argc > 1) {
         //int seed = atoi(argv[1]);
         //int seed = 4;
