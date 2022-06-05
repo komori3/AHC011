@@ -571,7 +571,7 @@ struct Input {
     }
 
     // TODO: 空マスが右下以外の木の生成
-    Input(uint16_t N_, Xorshift& rnd, int nshuffle = 0) : N(N_), T(2 * N * N * N) {
+    Input(uint16_t N_, Xorshift& rnd, uint8_t ei, uint8_t ej) : N(N_), T(2 * N * N * N) {
         std::fill(tiles, tiles + 192, UCHAR_MAX);
         for (int i = 0; i < N; i++) {
             for (int j = 0; j < N; j++) {
@@ -581,10 +581,10 @@ struct Input {
         vector<uint16_t> edges;
         for (uint8_t i = 0; i < N; i++) {
             for (uint8_t j = 0; j < N; j++) {
-                if (i + 1 < N && !(i + 1 == N - 1 && j == N - 1)) {
+                if (i + 1 < N && !((i == ei || i + 1 == ei) && j == ej)) {
                     edges.push_back(pack_e(i, j, i + 1, j));
                 }
-                if (j + 1 < N && !(i == N - 1 && j + 1 == N - 1)) {
+                if (j + 1 < N && !(i == ei && (j == ej || j + 1 == ej))) {
                     edges.push_back(pack_e(i, j, i, j + 1));
                 }
             }
@@ -604,9 +604,6 @@ struct Input {
                     tiles[p2] |= UP;
                 }
             }
-        }
-        if (nshuffle) {
-            // TODO
         }
     }
 
@@ -745,13 +742,11 @@ namespace NJudge {
 
 struct TreeModifier {
 
-    using Edge = uint16_t;
-
     uint16_t N;
     uint8_t target_ctr[16];
     uint8_t tree_ctr[16];
     uint8_t tiles[192];
-    vector<Edge> disabled;
+    vector<uint16_t> disabled;
     uint16_t cost;
 
     bool seen[192];
@@ -789,7 +784,7 @@ struct TreeModifier {
         }
     }
 
-    Edge choose_random_disabled_edge(Xorshift& rnd) {
+    uint16_t choose_random_disabled_edge(Xorshift& rnd) {
         int eid = rnd.next_int(disabled.size());
         std::swap(disabled[eid], disabled.back()); // 末端に移動しておく
         auto e = disabled.back();
@@ -843,7 +838,7 @@ struct TreeModifier {
                 if (found) break;
             }
             auto p = p2;
-            vector<Edge> edges; edges.reserve(128);
+            vector<uint16_t> edges; edges.reserve(128);
             while (true) {
                 auto np = prev[p];
                 if (np == UCHAR_MAX) break;
@@ -854,7 +849,7 @@ struct TreeModifier {
         }();
 
         uint16_t min_cost = std::numeric_limits<uint16_t>::max();
-        Edge min_edge;
+        uint16_t min_edge;
         // connect (i1,j1)-(i2,j2)
         toggle_edge(p1, p2);
         for (auto e2 : cands) {
@@ -901,6 +896,82 @@ struct TreeModifier {
 
 };
 
+
+// linear conflict
+struct LCSolver {
+    int N, e, ctr;
+    int p[10];
+    int nadj[10];
+    bool adj[10][10];
+
+    void setup(int N) {
+        this->N = N;
+        e = pack_p(N - 1, N - 1);
+    }
+
+    int calc() {
+        std::memset(nadj, 0, sizeof(int) * ctr);
+        std::memset(adj, 0, sizeof(bool) * 10 * ctr);
+        for (int i = 0; i + 1 < ctr; i++) {
+            for (int j = i + 1; j < ctr; j++) {
+                bool b = p[i] > p[j];
+                adj[i][j] = adj[j][i] = b;
+                nadj[i] += b;
+                nadj[j] += b;
+            }
+        }
+        int lc = 0;
+        while (true) {
+            auto it = std::max_element(nadj, nadj + ctr);
+            if (*it == 0) break;
+            int u = std::distance(nadj, it);
+            for (int v = 0; v < ctr; v++) {
+                if (adj[u][v]) {
+                    adj[u][v] = adj[v][u] = false;
+                    nadj[u]--;
+                    nadj[v]--;
+                }
+            }
+            lc++;
+        }
+        return lc << 1;
+    }
+
+    int calc_row(const uint8_t* tiles, int row) {
+        ctr = 0;
+        int begin = pack_p(row, 0), end = begin + N;
+        for (int pos = begin; pos < end; ++pos) {
+            int t = tiles[pos];
+            if (t != e && extract_i(t) == row) {
+                p[ctr++] = t;
+            }
+        }
+        if (ctr <= 1) return 0;
+        return calc();
+    }
+
+    int calc_col(const uint8_t* tiles, int col) {
+        ctr = 0;
+        int begin = pack_p(0, col), end = begin + (N << 4);
+        for (int pos = begin; pos < end; pos += 16) {
+            int t = tiles[pos];
+            if (t != e && extract_j(t) == col) {
+                p[ctr++] = t;
+            }
+        }
+        if (ctr <= 1) return 0;
+        return calc();
+    }
+
+    int calc_all(const uint8_t* tiles) {
+        int res = 0;
+        for (int row = 0; row < N; row++) res += calc_row(tiles, row);
+        for (int col = 0; col < N; col++) res += calc_col(tiles, col);
+        return res;
+    }
+
+} g_lcsol;
+
 namespace NFlow {
 
     template< typename T >
@@ -943,16 +1014,8 @@ namespace NFlow {
 
     struct Result {
         int total_cost;
-        vector<vector<pii>> type_to_assign;
+        uint8_t tiles[192];
     };
-
-    vector<pii> get_assign(const vector<pii>& from, const vector<pii>& to, const vector<int>& p) {
-        vector<pii> res;
-        for (int i = 1; i < from.size(); i++) {
-            res.emplace_back(pack_p(from[p[i]].first, from[p[i]].second), pack_p(to[i].first, to[i].second));
-        }
-        return res;
-    }
 
     Result calc_assign(const Input& input, const TreeModifier& tmod) {
         vector<vector<pii>> from(16, { {-1,-1} }), to(16, { {-1,-1} });
@@ -965,11 +1028,17 @@ namespace NFlow {
         }
         Result res;
         res.total_cost = 0;
-        res.type_to_assign.resize(16);
-        for (int t = 1; t < 16; t++) {
-            if (from[t].empty()) continue;
+        for (int t = 0; t < 16; t++) {
             const auto& fps = from[t];
             const auto& tps = to[t];
+            if (fps.size() == 1) continue;
+            if (fps.size() == 2) {
+                auto [fi, fj] = fps[1];
+                auto [ti, tj] = tps[1];
+                res.total_cost += abs(fi - ti) + abs(fj - tj);
+                res.tiles[pack_p(fi, fj)] = pack_p(ti, tj);
+                continue;
+            }
             auto dist = make_vector(0, fps.size(), tps.size());
             for (int i = 1; i < fps.size(); i++) {
                 auto [fi, fj] = fps[i];
@@ -979,10 +1048,13 @@ namespace NFlow {
                 }
             }
             auto [cost, p] = hungarian(dist);
-            //dump(t, cost, fps, tps, p);
             res.total_cost += cost;
-            res.type_to_assign[t] = get_assign(from[t], to[t], p);
+            for (int i = 1; i < fps.size(); i++) {
+                res.tiles[pack_p(fps[p[i]].first, fps[p[i]].second)] = pack_p(tps[i].first, tps[i].second);
         }
+        }
+        g_lcsol.setup(N);
+        res.total_cost += g_lcsol.calc_all(res.tiles);
         return res;
     }
 
@@ -1010,71 +1082,6 @@ namespace NBeam {
         }
     } hash_setup;
 
-    struct LCSolver {
-        int N, e, ctr;
-        int p[10];
-        int nadj[10];
-        bool adj[10][10];
-
-        void setup(int N) {
-            this->N = N;
-            e = pack_p(N - 1, N - 1);
-        }
-
-        int calc() {
-            std::memset(nadj, 0, sizeof(int) * ctr);
-            std::memset(adj, 0, sizeof(bool) * 10 * ctr);
-            for (int i = 0; i + 1 < ctr; i++) {
-                for (int j = i + 1; j < ctr; j++) {
-                    bool b = p[i] > p[j];
-                    adj[i][j] = adj[j][i] = b;
-                    nadj[i] += b;
-                    nadj[j] += b;
-                }
-            }
-            int lc = 0;
-            while (true) {
-                auto it = std::max_element(nadj, nadj + ctr);
-                if (*it == 0) break;
-                int u = std::distance(nadj, it);
-                for (int v = 0; v < ctr; v++) {
-                    if (adj[u][v]) {
-                        adj[u][v] = adj[v][u] = false;
-                        nadj[u]--;
-                        nadj[v]--;
-                    }
-                }
-                lc++;
-            }
-            return lc;
-        }
-
-        int calc_row(const uint8_t* tiles, int row) {
-            ctr = 0;
-            for (int col = 0; col < N; col++) { // TODO
-                int t = tiles[pack_p(row, col)];
-                if (t != e && extract_i(t) == row) {
-                    p[ctr++] = t;
-                }
-            }
-            if (ctr <= 1) return 0;
-            return calc();
-        }
-
-        int calc_col(const uint8_t* tiles, int col) {
-            ctr = 0;
-            for (int row = 0; row < N; row++) { // TODO
-                int t = tiles[pack_p(row, col)];
-                if (t != e && extract_j(t) == col) {
-                    p[ctr++] = t;
-                }
-            }
-            if (ctr <= 1) return 0;
-            return calc();
-        }
-
-    } g_lcsol;
-
     struct State;
     using StatePtr = std::shared_ptr<State>;
     struct State {
@@ -1085,7 +1092,7 @@ namespace NBeam {
         uint8_t lc_r[10], lc_c[10];
         uint8_t ep;
         int8_t pdir;
-        uint8_t cmds[max_beam_turn >> 2]; // >= 2bit * 2000
+        uint8_t cmds[max_beam_turn >> 2]; // 1 ターン 2bit
         uint64_t hash;
 
         State() : md(SHRT_MAX) {}
@@ -1114,11 +1121,11 @@ namespace NBeam {
             }
             for (int r = 0; r < N; r++) {
                 lc_r[r] = g_lcsol.calc_row(tiles, r);
-                lc += lc_r[r] * 2;
+                lc += lc_r[r];
             }
             for (int c = 0; c < N; c++) {
                 lc_c[c] = g_lcsol.calc_col(tiles, c);
-                lc += lc_c[c] * 2;
+                lc += lc_c[c];
             }
 
         }
@@ -1137,17 +1144,18 @@ namespace NBeam {
         }
 
         inline bool can_move(int dir) const {
-            return !(((dir + 2) & 3) == pdir || tiles[ep + d4[dir]] == UCHAR_MAX);
+            return ((dir + 2) & 3) != pdir && tiles[ep + d4[dir]] != UCHAR_MAX;
         }
+
+        inline uint64_t move_hash(int dir) const {
+            int np = ep + d4[dir];
+            return hash ^ g_hash_table[np][tiles[np]] ^ g_hash_table[ep][tiles[np]];
+            }
 
         inline void move(int dir) {
             int np = ep + d4[dir];
-            if (dir & 1) {
-                lc -= (lc_r[extract_i(np)] + lc_r[extract_i(ep)]) * 2;
-            }
-            else {
-                lc -= (lc_c[extract_j(np)] + lc_c[extract_j(ep)]) * 2;
-            }
+            if (dir & 1) lc -= lc_r[extract_i(np)] + lc_r[extract_i(ep)];
+            else lc -= lc_c[extract_j(np)] + lc_c[extract_j(ep)];
             md -= cell_cost(np);
             hash ^= g_hash_table[np][tiles[np]];
             std::swap(tiles[ep], tiles[np]);
@@ -1156,48 +1164,18 @@ namespace NBeam {
             if (dir & 1) {
                 lc_r[extract_i(np)] = g_lcsol.calc_row(tiles, extract_i(np));
                 lc_r[extract_i(ep)] = g_lcsol.calc_row(tiles, extract_i(ep));
-                lc += (lc_r[extract_i(np)] + lc_r[extract_i(ep)]) * 2;
+                lc += lc_r[extract_i(np)] + lc_r[extract_i(ep)];
             }
             else {
                 lc_c[extract_j(np)] = g_lcsol.calc_col(tiles, extract_j(np));
                 lc_c[extract_j(ep)] = g_lcsol.calc_col(tiles, extract_j(ep));
-                lc += (lc_c[extract_j(np)] + lc_c[extract_j(ep)]) * 2;
+                lc += lc_c[extract_j(np)] + lc_c[extract_j(ep)];
             }
             ep = np;
             pdir = dir;
             // 1 byte に 4 個
             cmds[turn >> 2] ^= dir << ((turn & 3) << 1);
             turn++;
-        }
-
-        inline void undo() {
-            turn--;
-            int dir = (cmds[turn >> 2] >> ((turn & 3) << 1)) & 3;
-            // cmds[turn >> 2] の (turn&3)<<1, ((turn&3)<<1)+1 bit 目をクリア
-            cmds[turn >> 2] &= ~(0b11U << ((turn & 3) << 1));
-            int np = ep - d4[dir];
-            md -= cell_cost(np);
-            hash ^= g_hash_table[np][tiles[np]];
-            std::swap(tiles[ep], tiles[np]);
-            hash ^= g_hash_table[ep][tiles[ep]];
-            md += cell_cost(ep);
-            ep = np;
-            pdir = !turn ? -1 : ((cmds[(turn - 1) >> 2] >> (((turn - 1) & 3) << 1)) & 3);
-        }
-
-        int16_t look_ahead(int depth) {
-            //dump(depth);
-            if (!md || !depth) return md;
-            int16_t cost = md;
-            for (int d = 0; d < 4; d++) {
-                if (!can_move(d)) continue;
-                //print();
-                move(d);
-                cost = std::min(cost, look_ahead(depth - 1));
-                undo();
-                //print();
-            }
-            return cost;
         }
 
         string get_cmd() const {
@@ -1221,10 +1199,6 @@ namespace NBeam {
         return true;
     }
 
-    //void set_cost(State& s) {
-    //    s.cost = s.look_ahead(0);
-    //}
-
     State beam_search(State init_state, double duration) {
         static constexpr int beam_width = 5000, degree = 4;
         static State sbuf[2][beam_width * degree];
@@ -1234,8 +1208,6 @@ namespace NBeam {
 
         int now_buffer = 0;
         int buf_size[2] = {};
-
-        //set_cost(init_state);
 
         sbuf[now_buffer][0] = init_state;
         ord[0] = 0;
@@ -1257,17 +1229,6 @@ namespace NBeam {
                 auto& now_state = now_states[ord[n]];
                 for (int d = 0; d < 4; d++) {
                     if (!now_state.can_move(d)) continue;
-#if 0
-                    auto tmp = now_state;
-                    now_state.move(d);
-                    if (!seen.contain(now_state.hash)) {
-                        seen.insert(now_state.hash);
-                        next_states[next_size] = now_state;
-                        set_cost(next_states[next_size]);
-                        next_size++;
-                    }
-                    now_state.undo();
-#else
                     auto& next_state = next_states[next_size];
                     next_state = now_state;
                     next_state.move(d);
@@ -1275,7 +1236,6 @@ namespace NBeam {
                         seen.insert(next_state.hash);
                         next_size++;
                     }
-#endif
                 }
             }
 
@@ -1320,9 +1280,10 @@ namespace NPuzzle {
         State(int N, const NFlow::Result& assign) : N(N) {
             tiles.resize(N, vector<int>(N, N * N - 1));
             fixed.resize(N, vector<bool>(N));
-            for (const auto& as : assign.type_to_assign) {
-                for (const auto& a : as) {
-                    tiles[extract_i(a.first)][extract_j(a.first)] = extract_i(a.second) * N + extract_j(a.second);
+            for (int i = 0; i < N; i++) {
+                for (int j = 0; j < N; j++) {
+                    int t = assign.tiles[pack_p(i, j)], ti = extract_i(t), tj = extract_j(t);
+                    tiles[i][j] = ti * N + tj;
                 }
             }
             md = calc_md_naive();
@@ -1901,7 +1862,7 @@ int main(int argc, char** argv) {
     initialize();
 
     Input input;
-    int seed = 4;
+    int seed = 1;
     if (argc > 1) {
         //int seed = atoi(argv[1]);
         //int seed = 4;
@@ -1913,15 +1874,23 @@ int main(int argc, char** argv) {
         input = Input(cin);
     }
 
-    int min_cost = INT_MAX, best_score = INT_MIN, loop = 0;
+    int min_cost = INT_MAX, best_score = INT_MIN;
     NFlow::Result assign;
     string ans;
-    while (timer.elapsed_ms() < 900) {
-        loop++;
-        TreeModifier tmod(input, Input(input.N, rnd));
+    int min_loop = INT_MAX, max_loop = INT_MIN, ctr_loop = 0;
+    double avg_loop = 0;
+    while (timer.elapsed_ms() < 500) {
+        TreeModifier tmod(input, Input(input.N, rnd, input.N - 1, input.N - 1));
+        int inner_loop = 0;
         while (tmod.cost) {
             tmod.local_search(rnd);
+            inner_loop++;
         }
+        if (tmod.cost) continue;
+        chmin(min_loop, inner_loop);
+        chmax(max_loop, inner_loop);
+        ctr_loop++;
+        avg_loop += inner_loop;
 
         auto res = NFlow::calc_assign(input, tmod);
         NPuzzle::State puz(input.N, res);
@@ -1946,7 +1915,8 @@ int main(int argc, char** argv) {
             }
         }
     }
-    dump(loop);
+    avg_loop /= ctr_loop;
+    dump(min_loop, max_loop, ctr_loop, avg_loop);
 
     if (true) {
         NPuzzle::State puz(input.N, assign);
@@ -1961,7 +1931,7 @@ int main(int argc, char** argv) {
 
     if (true) { // hybrid
         NPuzzle::State puz(input.N, assign);
-        puz.run_with_beam_search(7, 2900 - timer.elapsed_ms());
+        puz.run_with_beam_search(8, 2900 - timer.elapsed_ms());
         int score = NJudge::compute_score(input.cvt(), puz.cmds);
         if (best_score < score) {
             best_score = score;
