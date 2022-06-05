@@ -37,6 +37,7 @@ using __uint128_t = boost::multiprecision::uint128_t;
 #endif
 
 // hashset: https://nyaannyaan.github.io/library/hashmap/hashset.hpp
+// ありがとう
 namespace HashMapImpl {
 
     using namespace std;
@@ -635,10 +636,14 @@ struct Input {
 
 };
 
+// rust の judge 移植
 namespace NJudge {
+
     struct Sim {
+
         uint64_t n, T, turn, i, j;
         vector<vector<std::pair<uint64_t, uint64_t>>> from;
+
         Sim(const RawInput& input) : n(input.N), T(input.T), from(input.N, vector<std::pair<uint64_t, uint64_t>>(input.N, std::make_pair(0ULL, 0ULL))) {
             i = -1; j = -1;
             for (uint64_t x = 0; x < n; x++) {
@@ -651,6 +656,7 @@ namespace NJudge {
             }
             turn = 0;
         }
+
         bool apply(char c) {
             int d = c2d[c];
             auto i2 = i + di[d];
@@ -668,6 +674,7 @@ namespace NJudge {
             turn++;
             return true;
         }
+
         int compute_score(const RawInput& input) {
             UnionFind uf(n * n);
             vector<bool> tree(n * n, true);
@@ -728,7 +735,9 @@ namespace NJudge {
             }
             return (int)round(500000.0 * size / (n * n - 1));
         }
+
     };
+
     int compute_score(const RawInput& input, const string& out) {
         Sim sim(input);
         for (char c : out) {
@@ -738,8 +747,11 @@ namespace NJudge {
         }
         return sim.compute_score(input);
     }
+
 }
 
+// ランダム生成した木の辺を繋ぎ変える
+// 入力と同数のピースを持つ木を探す
 struct TreeModifier {
 
     uint16_t N;
@@ -861,6 +873,7 @@ struct TreeModifier {
                 new_cost += abs((int)target_ctr[t] - (int)tree_ctr[t]);
             }
 
+            // 焼きなましっぽく
             auto diff = (int)new_cost - (int)cost;
             double temp = 0.3;
             double prob = exp(-diff / temp);
@@ -896,9 +909,10 @@ struct TreeModifier {
 
 };
 
-
-// linear conflict
+// 行・列に対する linear conflict を高速に求めるための構造体
+// linear conflict: https://medium.com/swlh/looking-into-k-puzzle-heuristics-6189318eaca2
 struct LCSolver {
+
     int N, e, ctr;
     int p[10];
     int nadj[10];
@@ -1048,6 +1062,8 @@ namespace NFlow {
         uint8_t tiles[192];
     };
 
+
+    // ピースの種類ごとにマッチング
     Result calc_assign(const Input& input, const TreeModifier& tmod) {
         vector<vector<pii>> from(16, { {-1,-1} }), to(16, { {-1,-1} });
         int N = input.N;
@@ -1082,7 +1098,7 @@ namespace NFlow {
             res.total_cost += cost;
             for (int i = 1; i < fps.size(); i++) {
                 res.tiles[pack_p(fps[p[i]].first, fps[p[i]].second)] = pack_p(tps[i].first, tps[i].second);
-        }
+            }
         }
         g_lcsol.setup(N, pack_p(N - 1, N - 1));
         res.total_cost += g_lcsol.calc_all(res.tiles);
@@ -1090,7 +1106,6 @@ namespace NFlow {
     }
 
 }
-
 
 namespace NBeam {
 
@@ -1100,6 +1115,7 @@ namespace NBeam {
     // 省メモリ
     // 12 x 16
 
+    // zobrist hash
     uint64_t g_hash_table[192][192];
 
     struct HashSetup {
@@ -1176,11 +1192,6 @@ namespace NBeam {
             return ((dir + 2) & 3) != pdir && tiles[ep + d4[dir]] != UCHAR_MAX;
         }
 
-        inline uint64_t move_hash(int dir) const {
-            int np = ep + d4[dir];
-            return hash ^ g_hash_table[np][tiles[np]] ^ g_hash_table[ep][tiles[np]];
-            }
-
         inline void move(int dir) {
             int np = ep + d4[dir];
             if (dir & 1) lc -= lc_r[extract_i(np)] + lc_r[extract_i(ep)];
@@ -1216,17 +1227,6 @@ namespace NBeam {
         }
 
     };
-
-    bool equals(const State& s1, const State& s2) {
-        if (s1.turn != s2.turn) return false;
-        if (s1.md != s2.md) return false;
-        if (s1.ep != s2.ep) return false;
-        if (s1.pdir != s2.pdir) return false;
-        if (s1.hash != s2.hash) return false;
-        if (memcmp(s1.tiles, s2.tiles, sizeof(uint8_t) * 192)) return false;
-        if (memcmp(s1.cmds, s2.cmds, sizeof(uint8_t) * (max_beam_turn >> 2))) return false;
-        return true;
-    }
 
     State beam_search(State init_state, int beam_width, double duration) {
         static constexpr int max_beam_width = 15000, degree = 4;
@@ -1276,13 +1276,15 @@ namespace NBeam {
 
             if (next_states[ord[0]].md < best_state.md) {
                 best_state = next_states[ord[0]];
-                //dump(turn, best_state.md);
+                if (turn % 100 == 0) {
+                    dump(turn, best_state.md);
+                }
             }
 
             now_buffer ^= 1; // toggle buffer
             turn++;
         }
-        dump(seen.size());
+        dump(turn, best_state.md, seen.size());
         return best_state;
     }
 
@@ -1936,10 +1938,8 @@ int main(int argc, char** argv) {
     initialize();
 
     Input input;
-    int seed = 4;
+    int seed = 0;
     if (argc > 1) {
-        //int seed = atoi(argv[1]);
-        //int seed = 4;
         dump(seed);
         std::ifstream ifs(format("tools/in/%04d.txt", seed));
         input = Input(ifs);
@@ -1948,51 +1948,34 @@ int main(int argc, char** argv) {
         input = Input(cin);
     }
 
-    int min_cost = INT_MAX, best_score = INT_MIN;
-    NFlow::Result assign;
+    int min_cost = INT_MAX; // 木の変形で得られた最小コスト
+    NFlow::Result assign; // そのときの割り当て
+
+    int best_score = INT_MIN; // ベストスコア記録用
     string ans;
-    int min_loop = INT_MAX, max_loop = INT_MIN, ctr_loop = 0;
-    double avg_loop = 0;
-    while (timer.elapsed_ms() < 500) {
+
+    // find target tree
+    int loop = 0;
+    while (timer.elapsed_ms() < 475) {
+        loop++;
         TreeModifier tmod(input, Input(input.N, rnd, input.N - 1, input.N - 1));
-        int inner_loop = 0;
         while (tmod.cost) {
             tmod.local_search(rnd);
-            inner_loop++;
         }
-        if (tmod.cost) continue;
-        chmin(min_loop, inner_loop);
-        chmax(max_loop, inner_loop);
-        ctr_loop++;
-        avg_loop += inner_loop;
-
         auto res = NFlow::calc_assign(input, tmod);
         NPuzzle::State puz(input.N, res);
         if (puz.is_solvable()) {
-            // solve puzzle: TODO 回数多いほどよさそう　要高速化
-            if (false) {
-                puz.run();
-                int score = NJudge::compute_score(input.cvt(), puz.cmds);
-                if (chmax(best_score, score)) {
-                    best_score = score;
-                    ans = puz.cmds;
-                    dump(best_score);
-                }
-            }
-            // for beam search
-            if (true) {
-                if (res.total_cost < min_cost) {
-                    assign = res;
-                    min_cost = res.total_cost;
-                    dump(min_cost);
-                }
+            if (res.total_cost < min_cost) {
+                assign = res;
+                min_cost = res.total_cost;
+                dump(min_cost);
             }
         }
     }
-    avg_loop /= ctr_loop;
-    dump(min_loop, max_loop, ctr_loop, avg_loop);
+    dump(loop);
 
-    if (true) {
+    // ビームサーチで解が出せなかったときの保険としてルールベースで解いておく
+    {
         NPuzzle::State puz(input.N, assign);
         puz.run();
         int score = NJudge::compute_score(input.cvt(), puz.cmds);
@@ -2003,9 +1986,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (true) { // hybrid
+    // 揃っていない領域が 8x8 になるまでルールベースで解いて、あとはビームサーチ
+    {
         NPuzzle::State puz(input.N, assign);
-        puz.run_with_beam_search(8, 2900 - timer.elapsed_ms());
+        puz.run_with_beam_search(8, 2875 - timer.elapsed_ms());
         int score = NJudge::compute_score(input.cvt(), puz.cmds);
         if (best_score < score) {
             best_score = score;
